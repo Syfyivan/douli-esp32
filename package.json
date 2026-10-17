@@ -1,0 +1,46 @@
+{
+  "name": "douli-esp32",
+  "version": "0.1.0",
+  "private": true,
+  "description": "豆梨个人语音助手桌面端",
+  "author": "Douli",
+  "main": "desktop/main.mjs",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "android:prepare": "npm run build && node scripts/prepare-android.mjs",
+    "desktop": "npm run build && electron .",
+    "desktop:start": "node scripts/launch-desktop.mjs",
+    "desktop:start:packaged": "node scripts/launch-desktop.mjs --packaged",
+    "desktop:pack": "npm run build && electron-builder --dir --config electron-builder.json",
+    "desktop:dist": "npm run build && electron-builder --win --x64 --config electron-builder.json --publish never",
+    "desktop:check": "node scripts/check-desktop.mjs",
+    "desktop:check:packaged": "node scripts/check-desktop.mjs --packaged",
+    "desktop:check:verify": "node scripts/check-desktop.mjs --verify",
+    "test": "node --test tests/*.test.mjs",
+    "start:background": "node scripts/launch.mjs",
+    "stop": "node scripts/stop.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "10.1.6",
+    "@ozymandiasthegreat/vad": "2.0.7",
+    "fast-xml-parser": "5.11.2",
+    "fastify": "5.12.7",
+    "lucide-react": "1.57.0",
+    "opusscript": "0.1.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.15.3",
+    "pdfjs-dist": "6.4.299",
+    "vite": "8.3.4"
+  }
+}

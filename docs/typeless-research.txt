@@ -1,0 +1,57 @@
+Typeless 语音输入处理调查
+目标：本机 Windows Typeless 2.8.1；安装包 app.asar。
+方法：REA 6.5.0 analyze-javascript-application + inspect-analysis-view；补充 AST 静态格式化和字符串表恢复。没有执行目标脚本，没有进行实际录音或服务端抓包。
+ASAR SHA-256：a45c1fafe1e8536f1e8f2cb8fa06ad951805f973dc54846cf8ebb7b5f5310031
+
+1. 录音和音频处理
+readable/dist/renderer/static/js/n5lNq77L.js:8929：AudioContext 默认 16000 Hz。
+同文件:10195：普通录音默认单声道、16 bit，echoCancellation=false、noiseSuppression=false、autoGainControl=false；调用方可覆盖。
+同文件:10311：AudioWorklet 采集；记录实际采样率，样本转 Int16Array 后打包 WAV。
+同文件:10264：启用设置时临时静音背景音，录音停止后恢复。
+readable/dist/renderer/static/js/D1JFvEfK.mjs:3307：基于振幅和 RMS 的无声音检测，并非已验证的神经网络 VAD。
+同文件:4480 附近：不足 0.5 秒的音频会跳过精修并返回空结果。
+对照：readable/dist/renderer/static/js/CazmWDwy.mjs 中麦克风测试常量 C6 开启降噪；不能把测试设置当普通听写设置。
+
+2. 传输与压缩
+readable/dist/renderer/static/js/D1JFvEfK.mjs:3441：默认音频块长度 3000 ms，可由调试设置覆盖；socketSendAudioChunk 使用这一长度。
+decoded/dist/main/index.js:3112：enabledOpusCompression 默认 true。
+decoded/dist/main/worker/chunkSessionWorker.js:24：连续 Opus 编码的目标码率 32000 bit/s；通过独立 worker 调用本机 libopuschunk。
+decoded/dist/main/worker/opusWorker.js:33：完整音频编码配置为单声道、32000 bit/s、20 ms 帧、VBR。
+readable/dist/renderer/static/js/n5lNq77L.js:8175：WebSocket 路径 /ws/rt_voice_flow。
+
+3. 上下文
+decoded/dist/main/index.js:8977：应用名、标识、窗口标题、可见文本、浏览器页面标题/URL/域名。
+同文件:9101：输入区域类型、是否可编辑、Markdown 支持、选中文本、光标前后文本、输入框全文和附近文本。
+同文件:9180：应用/域名黑名单检查；采集字段受可访问性、超时和应用适配影响，不保证每次都有内容。
+readable/dist/renderer/static/js/D1JFvEfK.mjs:4374：先采集初始上下文，后续异步补充可见文本和邻近文本，并通过 replace_audio_context 更新。
+可见文本请求参数为 10000，邻近文本为前后各 1000，timeout 500 ms；原生实现的具体上限语义未反编译验证。
+
+4. 云端识别和精修
+readable/dist/renderer/static/js/n5lNq77L.js:8158、8686：客户端区分 transcription、refine_completed、refine_selected_text 等服务端事件。
+decoded/dist/main/index.js:13637：HTTP 回退接口 /ai/voice_flow，提交音频、audio_context、audio_metadata、模式等。
+这能证明客户端将转写和精修作为不同结果处理，不能证明云端固定调用两个模型或按特定顺序运行。
+产品功能（官网及包内说明）：去语气词、去重复、按最终改口意图整理、自动格式化邮件/列表、改善表达、随应用调整语气、个人词典、多语言混说、翻译、选中文本后语音编辑。
+官方来源：https://www.typeless.com/
+包内说明：readable/dist/renderer/static/js/2BchMC1V.js:2297、2630、2859、2919。
+
+5. 写回与修正反馈
+readable/dist/renderer/static/js/D1JFvEfK.mjs:3790 附近：根据输入框是否可编辑及应用配置决定写回或展示结果，之后启动编辑跟踪。
+decoded/dist/main/index.js:13168：sendTrackResultToServer 提交 refined_inserted_text、original_input_box、edited_input_box、active_application、device_environment、mode 到 /user/traits。
+同文件:13190：处理服务端返回的 auto_add_dictionary，通知界面新增词条。
+同文件:13295：清空、未修改以及大规模重写不作为同类纠正提交。
+同文件:13363：使用字符 diff，判断修改规模；不能据此推断服务端微调权重、训练方式或持久化细节。
+
+6. 弱网与低延迟
+readable/dist/renderer/static/js/n5lNq77L.js:8435：WebSocket 与 HTTP 回退结果竞争，完成 ID 去重，先得到有效结果后取消另一条路径。
+同文件:8474：弱网强制降级或最终结果超时后触发回退，同时准备完整音频压缩。
+readable/dist/renderer/static/js/D1JFvEfK.mjs:4900：记录麦克风连接、首帧和停止录音等时延。
+
+7. 平台与证据范围
+decoded/dist/main/index.js:1884：Windows 使用 ContextHelper.dll，macOS 使用 libContextHelper.dylib；输入辅助和编码库同样存在平台分支。这里只分析 Windows 安装包，不能保证 macOS 采集/插入行为完全一致。
+REA 主进程摘要：rea-app-summary.json
+REA 渲染进程摘要：rea-renderer-summary.json
+REA 完整证据：rea-app-evidence.json、rea-renderer-evidence.json
+REA 在 3 个解包原生模块（better-sqlite3、koffi、winax）发现包内声明哈希与磁盘文件不一致。使用 record-and-continue 保留该事实；不据此断言异常原因，也不把这些原生字节视为已验证。
+分析只选了主要业务文件；图覆盖不完整。字符串表恢复由 decode-static.cjs 对 AST 进行限定的纯数据运算，原始位置和输入哈希保存在 .provenance.json。
+REA 的 recover-javascript-sources 在本机不可用：它要求 Linux x64 Wakaru；该命令失败结果也已保留。
+未确定：ASR/LLM 的具体供应商和型号、云端系统提示词、云端降噪/VAD、模型调用次数、服务端数据保留和个性化算法。

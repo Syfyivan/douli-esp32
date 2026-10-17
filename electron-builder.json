@@ -1,0 +1,28 @@
+{
+  "appId": "cn.douli.desktop",
+  "productName": "豆梨",
+  "executableName": "Douli",
+  "directories": { "output": "release/desktop", "buildResources": "desktop/assets" },
+  "files": ["desktop/**/*", "server/**/*", "dist/**/*", "licenses/**/*", "package.json"],
+  "asar": true,
+  "npmRebuild": false,
+  "win": {
+    "icon": "desktop/assets/icon.ico",
+    "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }]
+  },
+  "nsis": {
+    "artifactName": "Douli-Setup-${version}-${arch}.${ext}",
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "perMachine": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "豆梨",
+    "deleteAppDataOnUninstall": false,
+    "runAfterFinish": false
+  },
+  "portable": { "artifactName": "Douli-Portable-${version}-${arch}.${ext}" },
+  "mac": { "target": ["dmg"], "category": "public.app-category.lifestyle", "icon": "desktop/assets/icon.png",
+    "extendInfo": { "NSMicrophoneUsageDescription": "豆梨在你开始语音对话时使用麦克风。" } },
+  "linux": { "target": ["AppImage"], "category": "Utility", "icon": "desktop/assets/icon.png" }
+}

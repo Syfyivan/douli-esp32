@@ -1,0 +1,20 @@
+.computer-settings { display: grid; gap: 14px; max-width: 840px; }
+.computer-settings > button { justify-self: start; }
+.computer-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.computer-new { margin: 24px 0; padding-top: 20px; border-top: 1px solid var(--line, #dfe5d8); }
+.computer-workspace { display: grid; grid-template-columns: minmax(200px, 0.8fr) minmax(0, 2fr); gap: 20px; }
+.computer-task-list { display: flex; flex-direction: column; gap: 8px; max-height: 660px; overflow-y: auto; }
+.computer-task-list > button { display: grid; gap: 7px; padding: 16px; text-align: left; border: 1px solid #dfe5d8; border-radius: 12px; background: transparent; color: inherit; }
+.computer-task-list > button.selected { background: #e6eddf; border-color: #9aa98d; }
+.computer-task-list strong, .computer-detail-heading h3 { overflow-wrap: anywhere; }
+.computer-task-list span, .computer-task-list small { color: #6e7f69; font-size: 12px; }
+.computer-task-detail { min-width: 0; padding: 18px; background: #f5f7f1; border-radius: 14px; }
+.computer-detail-heading { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.computer-detail-heading h3 { margin-top: 0; }
+.computer-detail-heading > span { white-space: nowrap; font-size: 13px; color: #526b4b; }
+.computer-output { max-height: 440px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #fff; border: 1px solid #dfe5d8; border-radius: 10px; font-size: 12px; line-height: 1.6; }
+.computer-history { margin: 18px 0; }
+.computer-history p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.computer-notice { padding: 12px; border-radius: 8px; background: #f4ead4; color: #76592c; }
+.computer-empty { padding: 24px; text-align: center; color: #718467; }
+@media (max-width: 900px) { .computer-workspace { grid-template-columns: 1fr; } .computer-task-list { max-height: 240px; } }

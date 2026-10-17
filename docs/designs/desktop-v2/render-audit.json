@@ -1,0 +1,113 @@
+[
+  {
+    "page": "chat",
+    "viewport": [
+      1440,
+      960
+    ],
+    "navigation": 6,
+    "activeNavigation": "chat",
+    "contentScroll": null,
+    "overflow": [],
+    "file": "01-chat.png",
+    "pixels": {
+      "width": 2880,
+      "height": 1920
+    }
+  },
+  {
+    "page": "assistant",
+    "viewport": [
+      1440,
+      960
+    ],
+    "navigation": 6,
+    "activeNavigation": "assistant",
+    "contentScroll": [
+      868,
+      868
+    ],
+    "overflow": [],
+    "file": "02-assistant.png",
+    "pixels": {
+      "width": 2880,
+      "height": 1920
+    }
+  },
+  {
+    "page": "memory",
+    "viewport": [
+      1440,
+      960
+    ],
+    "navigation": 6,
+    "activeNavigation": "memory",
+    "contentScroll": [
+      868,
+      868
+    ],
+    "overflow": [],
+    "file": "03-memory.png",
+    "pixels": {
+      "width": 2880,
+      "height": 1920
+    }
+  },
+  {
+    "page": "health",
+    "viewport": [
+      1440,
+      960
+    ],
+    "navigation": 6,
+    "activeNavigation": "health",
+    "contentScroll": [
+      868,
+      868
+    ],
+    "overflow": [],
+    "file": "04-health.png",
+    "pixels": {
+      "width": 2880,
+      "height": 1920
+    }
+  },
+  {
+    "page": "devices",
+    "viewport": [
+      1440,
+      960
+    ],
+    "navigation": 6,
+    "activeNavigation": "devices",
+    "contentScroll": [
+      868,
+      868
+    ],
+    "overflow": [],
+    "file": "05-devices.png",
+    "pixels": {
+      "width": 2880,
+      "height": 1920
+    }
+  },
+  {
+    "page": "settings",
+    "viewport": [
+      1440,
+      960
+    ],
+    "navigation": 6,
+    "activeNavigation": "settings",
+    "contentScroll": [
+      868,
+      868
+    ],
+    "overflow": [],
+    "file": "06-settings.png",
+    "pixels": {
+      "width": 2880,
+      "height": 1920
+    }
+  }
+]

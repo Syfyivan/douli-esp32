@@ -1,0 +1,4 @@
+.speaker-volume { padding: 8px 0 12px; }
+.speaker-volume + .speaker-volume { margin-top: 16px; padding-top: 20px; border-top: 1px solid var(--line); }
+.speaker-volume .row-title { margin-bottom: 14px; flex-wrap: wrap; }
+.speaker-volume .row-actions { flex-wrap: wrap; gap: 8px; }
