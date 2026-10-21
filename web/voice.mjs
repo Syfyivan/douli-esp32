@@ -1,3 +1,4 @@
+import { selectedPerson } from "./person-context.mjs";
 export class BrowserVoice {
   constructor({ onEvent, onStatus, onLevel }) {
     Object.assign(this, { onEvent, onStatus, onLevel });
@@ -11,8 +12,8 @@ export class BrowserVoice {
   async start(sessionId, route) {
     try {
       // Separate clocks let output pause without suspending microphone capture.
-      this.context = new AudioContext();
-      this.captureContext = new AudioContext();
+      this.context ||= new AudioContext();
+      this.captureContext ||= new AudioContext();
       await Promise.race([
         Promise.all([this.context.resume(), this.captureContext.resume()]),
         new Promise((_, reject) => {
@@ -36,6 +37,7 @@ export class BrowserVoice {
       this.silentGain.connect(this.captureContext.destination);
       const query = new URLSearchParams({ route });
       if (sessionId) query.set("session", sessionId);
+      if (selectedPerson()) query.set("person", selectedPerson());
       this.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/voice?${query}`);
       this.ws.binaryType = "arraybuffer";
       this.worklet.port.onmessage = ({ data }) => {
@@ -45,7 +47,7 @@ export class BrowserVoice {
       };
       this.ws.onopen = () => this.send({
         type: "hello", version: 1, transport: "websocket",
-        features: { aec: this.stream.getAudioTracks?.()[0]?.getSettings?.().echoCancellation === true, voice_controls: true, playback_ack: true },
+        features: { aec: this.stream.getAudioTracks?.()[0]?.getSettings?.().echoCancellation === true, voice_controls: true, playback_ack: this.playbackAcknowledged !== false, ...(this.avatarAudio ? { avatar_audio: true } : {}) },
         audio_params: { format: "pcm", sample_rate: 16000, channels: 1, frame_duration: 20 },
       });
       this.ws.onmessage = ({ data }) => {
@@ -102,7 +104,10 @@ export class BrowserVoice {
       }
       if (event.state === "sentence_end") {
         const segment = this.segments.get(`${id}:${event.segment_id}`);
-        if (segment) { segment.totalMs = event.duration_ms; this.reportSegment(segment, true); }
+        if (segment) {
+          if (typeof event.text === "string") segment.text = event.text;
+          segment.totalMs = event.duration_ms; this.reportSegment(segment, true);
+        }
       }
       if (event.state === "stop") {
         if (event.interrupted) {

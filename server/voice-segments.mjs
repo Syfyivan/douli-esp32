@@ -1,15 +1,17 @@
 export class SpeechSegments {
-  constructor({ firstWaitMs = 650, onSegment, isActive = () => true }) {
+  constructor({ firstWaitMs = 350, onSegment, isActive = () => true }) {
     Object.assign(this, { firstWaitMs, onSegment, isActive });
     this.pending = "";
     this.count = 0;
+    this.firstDeadlineReached = false;
   }
   push(text) {
     this.pending += text;
-    this.drain(false);
-    if (!this.timer && this.pending && !this.count) {
+    this.drain(this.firstDeadlineReached && !this.count);
+    if (!this.timer && this.pending && !this.count && !this.firstDeadlineReached) {
       this.timer = setTimeout(() => {
         this.timer = null;
+        this.firstDeadlineReached = true;
         // Prefer a natural boundary; the hard bound prevents an unpunctuated
         // model answer from withholding all audio until generation finishes.
         this.drain(true);
@@ -34,7 +36,12 @@ export class SpeechSegments {
       timed = false;
     }
   }
-  emit(text) { if (text.trim() && this.isActive()) { this.count++; this.onSegment(text); } }
+  emit(text) {
+    if (text.trim() && this.isActive()) {
+      clearTimeout(this.timer); this.timer = null;
+      this.count++; this.onSegment(text);
+    }
+  }
   finish() { clearTimeout(this.timer); this.emit(this.pending); this.pending = ""; }
   close() { clearTimeout(this.timer); this.pending = ""; }
 }

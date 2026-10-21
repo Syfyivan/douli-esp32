@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 import { VolcengineTranscriber } from "./volcengine-asr.mjs";
 import { wav } from "./audio.mjs";
+import { isVolcengineTts, streamVolcengineSpeech } from "./volcengine-tts.mjs";
+export { speechProfile } from "./volcengine-tts.mjs";
 
 export class ConfigurationError extends Error {
   constructor(message) {
@@ -26,10 +28,10 @@ function providerOptions(p) {
   // Do not send vendor-specific fields to unrelated compatible endpoints.
   const host = new URL(p.baseUrl).hostname;
   if (host === "api.deepseek.com")
-    return { thinking: { type: p.thinking ? "enabled" : "disabled" } };
+    return { thinking: { type: "disabled" } };
   return /(^|\.)siliconflow\.(cn|com)$/i.test(host) &&
     /Qwen3|DeepSeek-V[34]/i.test(p.model)
-    ? { enable_thinking: !!p.thinking, ...(p.thinking ? { thinking_budget: 4096 } : {}) }
+    ? { enable_thinking: false }
     : {};
 }
 async function checked(response, p) {
@@ -50,8 +52,8 @@ export async function complete(profile, messages, signal, options = {}) {
       messages,
       temperature: 0.2,
       max_tokens: 1200,
-      ...providerOptions(profile),
       ...requestOptions,
+      ...providerOptions(profile),
     }),
     signal: combined(signal, timeoutMs),
   });
@@ -95,7 +97,7 @@ export async function* streamChat(profile, messages, signal, tools = []) {
       messages,
       stream: true,
       temperature: 0.65,
-      max_tokens: profile.thinking ? 8000 : 1800,
+      max_tokens: 1800,
       ...providerOptions(profile),
       ...(tools.length ? { tools } : {}),
     }),
@@ -117,6 +119,12 @@ export async function* streamChat(profile, messages, signal, tools = []) {
         continue;
       const data = JSON.parse(line.slice(5));
       if (data.error) throw new Error(data.error.message || "模型流返回错误");
+      if (data.usage && typeof data.usage === "object") {
+        const usage = {};
+        for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"])
+          if (Number.isSafeInteger(data.usage[key]) && data.usage[key] >= 0) usage[key] = data.usage[key];
+        if (Object.keys(usage).length) yield { type: "usage", usage };
+      }
       if (typeof data.model === "string" && data.model.length <= 200 && data.model !== reportedModel) {
         reportedModel = data.model;
         yield { type: "model", model: data.model };
@@ -173,6 +181,7 @@ export async function synthesize(profile, text, signal, { maxBytes = 64 * 1024 *
   return { pcm: Buffer.concat(chunks), sampleRate: profile.pcmSampleRate || 24000 };
 }
 export async function* streamSpeech(profile, text, signal) {
+  if (isVolcengineTts(profile)) { yield* streamVolcengineSpeech(profile, text, signal); return; }
   const r = await fetch(endpoint(profile, "/audio/speech"), {
     method: "POST",
     headers: { ...headers(profile), "Content-Type": "application/json" },
@@ -181,8 +190,8 @@ export async function* streamSpeech(profile, text, signal) {
       input: text,
       voice: profile.voice || "alloy",
       response_format: "pcm",
-      ...(/siliconflow\.(cn|com)/.test(new URL(profile.baseUrl).hostname)
-        ? { sample_rate: profile.pcmSampleRate || 24000 }
+      ...(/(^|\.)siliconflow\.(cn|com)$/.test(new URL(profile.baseUrl).hostname)
+        ? { sample_rate: profile.pcmSampleRate || 24000, stream: true }
         : {}),
     }),
     signal: combined(signal),

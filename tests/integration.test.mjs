@@ -958,7 +958,8 @@ test("per-device settings survive reconnect and control recognition, route and o
         .length === 2,
   );
   assert.equal(asrCalls(), 1);
-  assert.ok(received.some(call => call.model === "fixture-health" && call.messages[0]?.content?.includes("健康信息助手")));
+  assert.ok(received.some(call => call.model === settings.models.daily.model && call.messages[0]?.content?.includes("健康信息助手")));
+  assert.ok(received.every(call => call.model !== "fixture-health"), "old topic models must not override the shared chat model");
   const decoded = Buffer.concat(
     out.binary.map((b) => Buffer.from(dec.decode(b))),
   );
@@ -1189,7 +1190,7 @@ test("device AEC allows a correction during an answer and preserves conversation
   await out.wait(m => m.some(e => e.type === "stt" && e.text === options.asrText) &&
     m.some(e => e.type === "tts" && e.state === "stop" && !e.interrupted));
   assert.equal(recordings.length, 1);
-  assert.ok(recordings[0].length > (140 + 240 + 1000) * 32, "recognition retains the onset and brief syllable gap");
+  assert.ok(recordings[0].length > (140 + 240 + app.store.settings().input.silenceMs) * 32, "recognition retains the onset and brief syllable gap before the configured endpoint");
   const answers = received.filter(request => request.stream);
   assert.equal(answers.length, 2);
   assert.ok(answers[1].messages.some(m => m.role === "user" && m.content.includes("请介绍一下这里的天气")));

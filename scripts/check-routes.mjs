@@ -50,11 +50,10 @@ try {
     assert.equal(result.message.route, item.expected);
     assert.ok(result.text.trim());
     if (item.id === "reasoning") assert.match(result.text, /4|四/);
-    const selected = settings.models[item.expected];
     report.cases.push({
       id: item.id,
       route: result.message.route,
-      model: result.message.metadata.routing?.model || (selected.baseUrl ? selected.model : settings.models.daily.model),
+      model: result.message.metadata.routing?.model || settings.models.daily.model,
       prompt: item.text,
       answer: result.text,
       timings: result.message.metadata.timings,

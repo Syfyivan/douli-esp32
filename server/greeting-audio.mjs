@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { streamSpeech } from "./providers.mjs";
+import { streamSpeech, speechProfile } from "./providers.mjs";
 
 // One fixed greeting, in memory only. Warm it while the board is connected and
 // idle; a wake during warming can consume incoming chunks without a second TTS
@@ -12,7 +12,7 @@ export class GreetingAudio {
   }
   prepare(settings, retry = false) {
     if (this.closed) return null;
-    const text = settings.assistant.greeting, profile = { ...settings.models.tts };
+    const text = settings.assistant.greeting, profile = { ...speechProfile(settings) };
     const key = createHash("sha256").update(JSON.stringify([
       text, profile.baseUrl, profile.model, profile.voice || "alloy",
       profile.pcmSampleRate || 24000, profile.apiKey || "",
@@ -57,7 +57,7 @@ export class GreetingAudio {
     const cacheHit = !!entry?.done && !entry.error;
     const audio = (async function* () {
       if (!entry) {
-        yield* streamSpeech(settings.models.tts, settings.assistant.greeting, signal);
+        yield* streamSpeech(speechProfile(settings), settings.assistant.greeting, signal);
         return;
       }
       let index = 0;

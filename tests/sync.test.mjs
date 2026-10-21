@@ -49,6 +49,17 @@ test("concurrent edits converge and parent deletion cannot resurrect chat childr
   assert.equal(a.db.prepare("SELECT COUNT(*) n FROM messages").get().n,0);
   assert.equal(b.db.prepare("SELECT COUNT(*) n FROM messages").get().n,0);
 });
+test("local voice enrollment mappings never replicate without their personal stores", t => {
+  const { stores: [a, b], replicas: [sa, sb] } = pair(t);
+  const left = a.settings(), right = b.settings();
+  right.people.groupId = "local-b"; b.saveSettings(right);
+  left.people.groupId = "local-a"; left.people.members = [{ personId: "private-person-a", voiceId: "v", voiceName: "a" }];
+  a.saveSettings(left); a.saveSettings(left);
+  const snapshot = sa.snapshot();
+  assert.ok(!JSON.stringify(snapshot).includes("private-person-a"));
+  sb.apply(snapshot); assert.equal(b.settings().people.groupId, "local-b");
+  assert.equal(b.settings().people.members.length, 0);
+});
 test("remote health edits invalidate a locally opened form even at the same revision", t => {
   const { vaults: [va, vb], replicas: [sa, sb] } = pair(t);
   const first = va.put("fact", factData({ kind: "allergy", name: "A", confirmed: true }));

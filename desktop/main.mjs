@@ -205,7 +205,7 @@ async function start() {
   });
   ses.webRequest.onHeadersReceived({ urls: [origin + "/*"] }, (details, callback) => {
     callback({ responseHeaders: { ...details.responseHeaders,
-      "Content-Security-Policy": ["default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws://127.0.0.1:" + adminPort + "; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'; frame-ancestors 'none'"],
+      "Content-Security-Policy": ["default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss://api.simli.ai ws://127.0.0.1:" + adminPort + "; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'; frame-ancestors 'none'"],
     } });
   });
   contents.setWindowOpenHandler(({ url }) => {

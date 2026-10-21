@@ -11,6 +11,21 @@ const profile = { baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro",
 const frame = delta => `data: ${JSON.stringify({ model: profile.model, choices: [{ delta }] })}\n\n`;
 const streamed = (...deltas) => new Response(deltas.map(frame).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
 
+test("stream usage preserves the last content and exposes only numeric counters", async t => {
+  t.mock.method(globalThis, "fetch", async () => new Response('data: ' + JSON.stringify({
+    choices: [{ delta: { content: "完成。" } }],
+    usage: { prompt_tokens: 1200, prompt_cache_hit_tokens: 1024, completion_tokens: 3,
+      total_tokens: -1, prompt_cache_miss_tokens: "private-provider-body", secret: "not-public" },
+  }) + '\n\ndata: [DONE]\n\n'));
+  const events = [];
+  for await (const event of streamChat(profile, [])) events.push(event);
+  assert.deepEqual(events.find(e => e.type === "usage").usage,
+    { prompt_tokens: 1200, completion_tokens: 3, prompt_cache_hit_tokens: 1024 });
+  assert.equal(events.find(e => e.type === "text").text, "完成。");
+  assert.ok(!JSON.stringify(events).includes("private-provider-body"));
+  assert.ok(!JSON.stringify(events).includes("not-public"));
+});
+
 test("prepared speech is bounded in memory and rejects incomplete PCM samples", async t => {
   let cancelled = false;
   t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
@@ -23,7 +38,7 @@ test("prepared speech is bounded in memory and rejects incomplete PCM samples", 
   await assert.rejects(synthesize(profile, "测试"), /不完整 PCM/);
 });
 
-test("official DeepSeek explicitly controls thinking in completion and streaming requests", async t => {
+test("official DeepSeek disables thinking in completion and streaming even with old thinking flags", async t => {
   const received = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     const body = JSON.parse(options.body);
@@ -38,11 +53,11 @@ test("official DeepSeek explicitly controls thinking in completion and streaming
       if (event.type === "text") assert.equal(event.text, "连接成功");
     }
   }
-  assert.deepEqual(received.map(r => r.thinking), [{type:"disabled"}, {type:"disabled"}, {type:"enabled"}, {type:"enabled"}]);
+  assert.deepEqual(received.map(r => r.thinking), Array.from({ length: 4 }, () => ({ type: "disabled" })));
   assert.ok(received.every(r => !("enable_thinking" in r) && !("thinking_budget" in r)));
 });
 
-test("SiliconFlow keeps its thinking controls and unrelated endpoints receive neither vendor's controls", async t => {
+test("SiliconFlow disables thinking and unrelated endpoints receive neither vendor's controls", async t => {
   const received = [];
   t.mock.method(globalThis, "fetch", async (_url, options) => {
     received.push(JSON.parse(options.body));
@@ -52,8 +67,8 @@ test("SiliconFlow keeps its thinking controls and unrelated endpoints receive ne
   await complete({ ...profile, baseUrl: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen3.5-35B-A3B", thinking: false }, []);
   for (const baseUrl of ["https://compatible.example/v1", "https://api.deepseek.com.example/v1"])
     await complete({ ...profile, baseUrl, thinking: true }, []);
-  assert.equal(received[0].enable_thinking, true);
-  assert.equal(received[0].thinking_budget, 4096);
+  assert.equal(received[0].enable_thinking, false);
+  assert.ok(!("thinking_budget" in received[0]));
   assert.equal(received[1].enable_thinking, false);
   assert.ok(!("thinking_budget" in received[1]));
   assert.ok(received.every(r => !("thinking" in r)));
@@ -96,12 +111,13 @@ test("tool rounds retain streamed reasoning internally without publishing or sto
   assert.equal(continuation.reasoning_content, "private-reasoning-fixture");
   assert.equal(continuation.tool_calls[0].function.arguments, '{"query":"测试暗号"}');
   assert.equal(requests[1].messages.at(-1).tool_call_id, "history-call");
-  assert.ok(requests.every(r => r.thinking.type === "enabled"));
+  assert.ok(requests.every(r => r.thinking.type === "disabled"));
   assert.ok(!response.body.includes("private-"));
   assert.ok(!JSON.stringify(app.store.messages(done.message.session_id)).includes("private-"));
-  const check = await app.admin.inject({ method: "POST", url: "/api/models/test", payload: { kind: "strong" } });
+  const check = await app.admin.inject({ method: "POST", url: "/api/models/test", payload: { kind: "daily" } });
   assert.equal(check.statusCode, 200);
   assert.equal(check.json().output, "连接成功");
   assert.equal(requests.at(-1).thinking.type, "disabled");
-  assert.equal(app.store.settings().models.strong.thinking, true);
+  assert.equal(app.store.settings().models.daily.thinking, false);
+  assert.equal(app.store.settings().models.strong, undefined);
 });

@@ -20,6 +20,6 @@ export default defineConfig({
   build: {
     outDir: "dist",
     // AudioWorklet must load a same-origin file under the desktop script CSP.
-    assetsInlineLimit: file => file.replaceAll("\\", "/").endsWith("/web/capture.js") ? false : undefined,
+    assetsInlineLimit: file => /\/web\/(?:capture|avatar-meter)\.js$/.test(file.replaceAll("\\", "/")) ? false : undefined,
   },
 });

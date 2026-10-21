@@ -14,10 +14,14 @@ import { defaults } from "../server/config.mjs";
 
 test("farewell accepts observed ASR aliases and natural word order only as complete commands", () => {
   for (const text of ["再见豆梨", "再见，都丽。", "再见，都离。", "再 见，都 离！", "晚安", "再见", "停止聊天",
-    "豆梨，再见", "都离，拜拜", "再见啦，豆梨", "豆梨，晚安啦", "拜拜啦", "结束对话吧", "停止聊天了"])
+    "豆梨，再见", "都离，拜拜", "再见啦，豆梨", "豆梨，晚安啦", "拜拜啦", "结束对话吧", "停止聊天了",
+    "嗯，好的，再见豆梨。", "嗯嗯，好，那就再见啦，豆梨", "豆梨，好的，再见", "好，再见豆梨，谢谢",
+    "那今天先聊到这里吧", "先不聊了", "好了，结束这次会话吧"])
     assert.equal(isFarewell(text), true, text);
   for (const text of ["不要说再见都丽", "再见都离是什么意思", "你刚才说再见都离了吗", "我跟都丽说了再见", "再见都离，先别结束", "再见张三", "你好都离",
-    "豆梨，不要结束对话", "豆梨，再见之前还有个问题", "如果我说再见呢", "再见吗", "你说晚安", "‘再见，都离’", "都离", "豆梨豆梨再见"])
+    "豆梨，不要结束对话", "豆梨，再见之前还有个问题", "如果我说再见呢", "再见吗", "你说晚安", "‘再见，都离’", "都离", "豆梨豆梨再见",
+    "嗯好的", "谢谢你", "嗯好的，再见是什么意思", "好，再见豆梨，不过先别结束", "我说了好的再见豆梨",
+    "今天先聊到这里是什么意思", "把再见翻译成英文", "停止电脑任务", "那今天先聊到这里吗"])
     assert.equal(isFarewell(text), false, text);
 });
 
@@ -83,7 +87,7 @@ test("observed farewell transcripts enter confirmed standby without asking the a
     connection = new VoiceConnection(gateway, socket, { device });
     connection.message({ type: "hello", version: 3, features: { persistent_connection: true }, audio_params: { format: "opus", channels: 1, sample_rate: 16000 } });
     connection.message({ type: "session", state: "standby" });
-    for (const text of ["再见，都丽。", "再见，都离。", "都离，再见啦", "拜拜，豆梨"]) {
+    for (const text of ["再见，都丽。", "再见，都离。", "都离，再见啦", "拜拜，豆梨", "嗯，好的，再见豆梨。", "那今天先聊到这里吧"]) {
       connection.message({ type: "listen", state: "start", mode: "auto" });
       await connection.process(null, text);
       assert.equal(modelCalls, 0, text);

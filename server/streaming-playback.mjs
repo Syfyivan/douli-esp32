@@ -1,5 +1,4 @@
 import { PcmResampler, packAudio } from "./audio.mjs";
-import { isNight } from "./config.mjs";
 
 // A response from a native speech model has one conservative playback segment:
 // audio/text alignment is not supplied by this provider, so an interrupted
@@ -20,12 +19,13 @@ export class StreamingPlayback {
       if (c.call.holdingPlayback) continue;
       const frame = Buffer.alloc(640);
       this.pending.copy(frame, 0, 0, 640); this.pending = this.pending.subarray(Math.min(640, this.pending.length));
-      const settings = c.store.settings(), gain = c.config.volume * (isNight(settings) ? settings.assistant.night.volume : 1);
+      const { pcmGain: gain, playbackGain } = c.outputVolume();
       if (gain !== 1) for (let i = 0; i < frame.length; i += 2) frame.writeInt16LE(Math.round(frame.readInt16LE(i) * gain), i);
       if (!this.started) {
         this.started = true; c.state = "speaking";
         c.mark(this.turn, "firstAudioMs", Date.now() - this.turn.lastSpeechAt);
-        c.send({ type: "tts", state: "sentence_start", text: s.text, segment_id: s.id, turn_id: this.turn.id });
+        c.send({ type: "tts", state: "sentence_start", text: s.text, segment_id: s.id, turn_id: this.turn.id,
+          ...(playbackGain != null ? { playback_gain: playbackGain } : {}) });
       }
       s.durationMs += 20;
       const data = c.options.browser ? frame : Buffer.from(c.encoder.encode(frame, 320));

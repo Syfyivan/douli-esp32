@@ -7,7 +7,7 @@ import {
   createCipheriv,
   createDecipheriv,
 } from "node:crypto";
-import { defaults, mergeSettings } from "./config.mjs";
+import { normalizeSettings } from "./config.mjs";
 import { migrateMemory } from "./memory-schema.mjs";
 
 export class Store {
@@ -39,6 +39,10 @@ export class Store {
       CREATE INDEX IF NOT EXISTS memory_source ON memories(source_id);
     `);
     migrateMemory(this.db);
+    if (!this.db.prepare("PRAGMA table_info(dictionary)").all().some(column => column.name === "scope")) {
+      this.db.exec("ALTER TABLE dictionary ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'");
+      this.db.prepare("UPDATE dictionary SET scope='assistant_address' WHERE replacement=?").run(this.settings().assistant.name);
+    }
   }
   seal(value) {
     const nonce = randomBytes(12);
@@ -65,12 +69,12 @@ export class Store {
     const row = this.db
       .prepare("SELECT value FROM settings WHERE id=?")
       .get("config");
-    return mergeSettings(defaults, row ? this.unseal(row.value) : {});
+    return normalizeSettings(row ? this.unseal(row.value) : {});
   }
   saveSettings(value) {
     this.db
       .prepare("INSERT OR REPLACE INTO settings VALUES (?,?)")
-      .run("config", this.seal(value));
+      .run("config", this.seal(normalizeSettings(value)));
   }
   publicSettings() {
     const s = this.settings();
@@ -80,6 +84,8 @@ export class Store {
     }
     s.search.hasKey = !!s.search.apiKey;
     s.search.apiKey = "";
+    s.avatar.hasKey = !!s.avatar.apiKey;
+    s.avatar.apiKey = "";
     s.input.hasStreamingToken = !!s.input.streamingToken;
     s.input.streamingToken = "";
     return s;

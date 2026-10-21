@@ -11,19 +11,24 @@ import {
   UtteranceBuffer,
   wav,
 } from "./audio.mjs";
-import { LiveTranscriber, streamSpeech, synthesize } from "./providers.mjs";
+import { LiveTranscriber, streamSpeech, speechProfile } from "./providers.mjs";
+import { VolcengineTts } from "./volcengine-tts.mjs";
+import { bufferSpeech } from "./buffered-speech.mjs";
+import { correctAssistantAddress } from "./input.mjs";
 import { VoiceState } from "./voice-state.mjs";
 import { SpeechDetector } from "./speech-detector.mjs";
 import { SpeechSegments } from "./voice-segments.mjs";
-import { TurnDetector, isBackchannel, isExplicitInterruption } from "./turn-detector.mjs";
+import { TurnDetector, isBackchannel, isExplicitInterruption, isPlaybackEcho } from "./turn-detector.mjs";
 import { validateFrame } from "./vision.mjs";
 import { isNight, deviceConfig } from "./config.mjs";
 import { isFarewell } from "./voice-commands.mjs";
+import { conversationEndIntent } from "./conversation-intent.mjs";
 import { controlSpeaker } from "./speaker-control.mjs";
 import { isLocalOrigin } from "./local-origin.mjs";
 import { RealtimeVoice } from "./realtime-voice.mjs";
 import { StreamingPlayback } from "./streaming-playback.mjs";
 import { GreetingAudio } from "./greeting-audio.mjs";
+import { guestReply } from "./guest-chat.mjs";
 import { AudioPacer } from "./audio-pacer.mjs";
 import { audibleContext } from "./voice-state.mjs";
 
@@ -202,6 +207,7 @@ export class Gateway {
             remote,
             device,
             sessionId: browser ? url.searchParams.get("session") : null,
+            personId: browser ? url.searchParams.get("person") || "" : "",
             route: url.searchParams.get("route") || "auto",
           });
           if (device) {
@@ -248,6 +254,8 @@ export class Gateway {
         standbyConfirmed: this.connections.get(d.id).standbyConfirmed,
         connectedAt: this.connections.get(d.id).connectedAt,
         audioFramesReceived: this.connections.get(d.id).audioFramesReceived,
+        inputAudio: this.connections.get(d.id).inputAudio ?? null,
+        lastError: this.connections.get(d.id).lastError ?? null,
         deviceAec: this.connections.get(d.id).features?.device_aec === true,
         bargeInCount: this.connections.get(d.id).bargeInCount,
         lastBargeInAt: this.connections.get(d.id).lastBargeInAt,
@@ -255,6 +263,7 @@ export class Gateway {
         heartbeatRttMs: this.connections.get(d.id).heartbeatRttMs ?? null,
         lastWake: this.connections.get(d.id).lastWake ?? null,
         lastReply: this.connections.get(d.id).lastReply ?? null,
+        lastSpeaker: this.connections.get(d.id).lastSpeaker ?? null,
         greetingAudio: this.greetingAudio.snapshot(),
         voice: this.connections.get(d.id).call.snapshot(),
       } : null,
@@ -279,8 +288,9 @@ export class Gateway {
 export class VoiceConnection {
   constructor(gateway, socket, options) {
     this.gateway = gateway;
-    this.store = gateway.store;
-    this.engine = gateway.engine;
+    const bundle = options.browser && gateway.people ? gateway.people.bundle(options.personId) : null;
+    this.store = bundle?.store || gateway.store;
+    this.engine = bundle?.engine || gateway.engine;
     this.ws = socket;
     this.options = options;
     this.call = new VoiceState(state => { if (this.hello) this.send({ type: "voice_state", ...state }); });
@@ -380,6 +390,7 @@ export class VoiceConnection {
       this.speechDetector.close();
       this.turnDetector.close();
       clearTimeout(this.pauseTimer);
+      this.streamingTts?.close();
       this.decoder.delete();
       this.encoder.delete();
       for (const p of this.pendingRpc.values())
@@ -414,8 +425,9 @@ export class VoiceConnection {
     this.send({ type: "metric", turn_id: turn.id, name, value });
   }
   savePlayback(turn) {
-    if (!turn?.messageId || this.store.closed) return;
-    const row = this.store.db.prepare("SELECT metadata FROM messages WHERE id=?").get(turn.messageId);
+    const store = turn?.personalStore || this.store;
+    if (!turn?.messageId || store.closed) return;
+    const row = store.db.prepare("SELECT metadata FROM messages WHERE id=?").get(turn.messageId);
     if (!row) return;
     const metadata = JSON.parse(row.metadata || "{}");
     const segments = turn.segments;
@@ -426,7 +438,7 @@ export class VoiceConnection {
     if (turn.audioDelivery) playback.audioDelivery = turn.audioDelivery;
     // Health answers remain exclusively in the encrypted vault. Playback
     // accounting must never copy their words into ordinary message metadata.
-    this.store.db.prepare("UPDATE messages SET metadata=? WHERE id=?").run(JSON.stringify({ ...metadata, voicePlayback: playback }), turn.messageId);
+    store.db.prepare("UPDATE messages SET metadata=? WHERE id=?").run(JSON.stringify({ ...metadata, voicePlayback: playback }), turn.messageId);
     this.send({ type: "playback", turn_id: turn.id, message_id: turn.messageId, ...playback });
     this.syncRealtimeContext(turn);
   }
@@ -485,6 +497,7 @@ export class VoiceConnection {
     const delivery = turn.wake || (turn.audioDelivery ??= {
       receivedAt: new Date(turn.startedAt).toISOString(), turnId: turn.id,
       firstAudioSentMs: now - turn.startedAt,
+      timings: turn.timings,
     });
     delivery.audioFramesSent = (delivery.audioFramesSent || 0) + 1;
     delivery.maxAudioSendGapMs = Math.max(delivery.maxAudioSendGapMs || 0,
@@ -551,6 +564,7 @@ export class VoiceConnection {
     return input;
   }
   error(e) {
+    this.lastError = { at: new Date().toISOString(), message: String(e.message).slice(0, 500) };
     this.send({
       type: "alert",
       status: "暂时无法完成",
@@ -567,6 +581,7 @@ export class VoiceConnection {
     if (turn && !turn.interrupted && (!turn.generated || turn.segments.some(s => !s.finished || (turn.acknowledged && s.playedMs < s.durationMs)))) {
       turn.interrupted = true;
       turn.interruptedAt = Date.now();
+      if (turn.wake) turn.wake.interrupted = true;
       this.savePlayback(turn);
     }
     this.generation++;
@@ -717,6 +732,16 @@ export class VoiceConnection {
     }
     if (m.type === "voice_control") { this.control(m); return; }
     if (m.type === "playback") { this.playback(m); return; }
+    if (m.type === "avatar_metric") {
+      const turn = this.turns.get(m.turn_id);
+      if (this.options.browser && this.features?.avatar_audio === true && turn && !turn.interrupted &&
+          turn.id === this.call.turnId && m.name === "avatarAudioMs" &&
+          Number.isFinite(m.value) && m.value >= 0 && m.value <= 30000 && turn.firstAudioSentAt != null) {
+        this.mark(turn, m.name, Math.round(m.value));
+        this.savePlayback(turn);
+      }
+      return;
+    }
     if (m.type === "vision" && this.options.browser) {
       if (m.action === "start" && ["camera", "screen"].includes(m.source)) this.visionSource = m.source;
       if (m.action === "stop") { this.visionSource = null; this.pendingVision?.resolve(null); this.pendingVision = null; }
@@ -782,8 +807,12 @@ export class VoiceConnection {
         else void this.process(null, m.text);
       }
     }
-    if (m.type === "text" && this.options.browser)
+    if (m.type === "text" && this.options.browser) {
+      // Typed input has no acoustic endpoint; do not reuse a previous utterance's
+      // timestamp when reporting this turn's latency.
+      this.lastSpeechAt = Date.now();
       void this.process(null, String(m.text || "").slice(0, 16000));
+    }
     if (
       m.type === "mcp" &&
       m.payload?.id &&
@@ -804,9 +833,24 @@ export class VoiceConnection {
         : Buffer.from(this.decoder.decode(frame));
     if (decoded.length % 2) throw new Error("无效 PCM 数据");
     const pcm = resample(decoded, this.inputRate);
+    // Keep levels and counters in RAM, never microphone audio or transcripts.
+    const level = rms(pcm);
+    this.inputAudio = {
+      at: new Date().toISOString(), format: this.format, sampleRate: this.inputRate,
+      decodedFrames: (this.inputAudio?.decodedFrames || 0) + 1,
+      frameMs: pcm.length / 32, rms: level,
+      maxRms: Math.max(this.inputAudio?.maxRms || 0, level),
+      voicedFrames: this.inputAudio?.voicedFrames || 0,
+      lastVoicedAt: this.inputAudio?.lastVoicedAt || null,
+    };
     if (this.realtime) { this.realtime.push(pcm); return; }
     const input = this.inputSettings();
     const voiced = input.vad === "energy" ? rms(pcm) >= input.rmsThreshold : this.speechDetector.detect(pcm, input.rmsThreshold);
+    Object.assign(this.inputAudio, { vad: input.vad, threshold: input.rmsThreshold, voiced });
+    if (voiced) {
+      this.inputAudio.voicedFrames++;
+      this.inputAudio.lastVoicedAt = this.inputAudio.at;
+    }
     if (voiced) this.lastSpeechAt = Date.now();
     if (this.bargeCandidate) { this.captureBarge(pcm, voiced); return; }
     if (
@@ -831,25 +875,28 @@ export class VoiceConnection {
     }
     this.capture(pcm, voiced);
   }
-  cancelBarge() {
+  cancelBarge(reason = "cancelled") {
     const candidate = this.bargeCandidate;
     this.bargeCandidate = null;
     candidate?.control.abort(); candidate?.live.close();
     if (candidate) {
-      Object.assign(candidate.diagnostic, { state: "dismissed", elapsedMs: Date.now() - candidate.startedAt });
+      Object.assign(candidate.diagnostic, { state: "dismissed", reason, elapsedMs: Date.now() - candidate.startedAt });
       this.send({ type: "barge", state: "resume", turn_id: candidate.turnId });
     }
     this.releaseOutput();
   }
   beginBarge(frames) {
-    const candidate = { turnId: this.call.turnId, startedAt: Date.now(), frames: [], speechMs: 0, silenceMs: 0, control: new AbortController() };
+    const candidate = { turnId: this.call.turnId, startedAt: Date.now(), frames: [], continuation: [],
+      totalMs: 0, speechMs: 0, silenceMs: 0, control: new AbortController() };
     candidate.diagnostic = this.lastBargeCandidate = {
       at: new Date(candidate.startedAt).toISOString(), turnId: candidate.turnId, state: "checking", elapsedMs: 0,
     };
     const turn = this.turns.get(candidate.turnId);
     if (turn?.wake) turn.wake.bargeCandidates = (turn.wake.bargeCandidates || 0) + 1;
-    candidate.live = new LiveTranscriber(this.store.settings(), this.engine.context(this.session.id), text => {
-      if (this.bargeCandidate === candidate && isExplicitInterruption(text)) this.confirmBarge(candidate);
+    candidate.live = new LiveTranscriber(this.store.settings(), this.asrContext(), text => {
+      if (this.bargeCandidate !== candidate || candidate.finishing) return;
+      candidate.text = text;
+      this.checkBargeText(candidate);
     });
     this.bargeCandidate = candidate;
     // A short sound may be a backchannel, noise or residual echo. Continue
@@ -858,37 +905,76 @@ export class VoiceConnection {
     this.send({ type: "barge", state: "candidate", turn_id: candidate.turnId });
     for (const frame of frames) this.captureBarge(frame, rms(frame) >= Math.min(this.inputSettings().rmsThreshold, 0.004));
   }
+  bargePlayback(candidate) {
+    // Only compare with segments that have actually started sending audio.
+    const spoken = this.turns.get(candidate.turnId)?.segments.filter(s => s.durationMs > 0).slice(-3).map(s => s.text).join("") || "";
+    candidate.echoGuard ||= !this.options.browser && !!spoken;
+    candidate.diagnostic.echoGuard = !!candidate.echoGuard;
+    return spoken;
+  }
+  checkBargeText(candidate) {
+    const spoken = this.bargePlayback(candidate), text = candidate.text || "";
+    if (candidate.echoGuard && isPlaybackEcho(text, spoken)) {
+      candidate.diagnostic.textDecision = "playback_echo";
+      return;
+    }
+    if (isExplicitInterruption(text)) this.confirmBarge(candidate, true, "explicit_request");
+    else if (candidate.echoGuard && candidate.speechMs >= 240 && !isBackchannel(text) &&
+        text.replace(/[^\p{L}\p{N}]/gu, "").length >= 4)
+      this.confirmBarge(candidate, true, "distinct_speech");
+  }
+  dismissBarge(candidate, reason) {
+    if (this.bargeCandidate !== candidate) return;
+    const continuation = candidate.continued ? candidate.continuation : [];
+    this.cancelBarge(reason);
+    // An echo result describes the old phrase, not speech that arrived while
+    // its final recognition was pending. Recognize that continuation afresh.
+    if (continuation.length) this.beginBarge(continuation);
+  }
   captureBarge(pcm, voiced) {
     const candidate = this.bargeCandidate;
     if (!candidate) return;
-    // Preserve continuation while the short-utterance classifier is pending.
-    // New speech invalidates that result and confirms an interruption.
+    candidate.totalMs += pcm.length / 32;
+    if (candidate.totalMs > 6000) { this.cancelBarge("input_limit"); return; }
+    this.bargePlayback(candidate);
+    // Keep continuation bounded while awaiting recognition. Residual playback
+    // can also continue; duration alone cannot confirm an ESP32 interruption.
     if (candidate.finishing) {
       candidate.frames.push(pcm);
-      if (voiced) this.confirmBarge(candidate);
+      candidate.continuation.push(pcm);
+      if (voiced) {
+        candidate.continued = true;
+        if (!candidate.echoGuard) this.confirmBarge(candidate, true, "continued_speech");
+      }
       return;
     }
     candidate.frames.push(pcm);
     candidate.live.push(pcm, voiced);
     if (voiced) { candidate.speechMs += pcm.length / 32; candidate.silenceMs = 0; }
     else candidate.silenceMs += pcm.length / 32;
-    if (candidate.speechMs >= 600) { this.confirmBarge(candidate); return; }
+    candidate.diagnostic.speechMs = candidate.speechMs;
+    this.checkBargeText(candidate);
+    if (this.bargeCandidate !== candidate) return;
+    if (candidate.speechMs >= 600 && !candidate.echoGuard) { this.confirmBarge(candidate, true, "sustained_speech"); return; }
     if (candidate.silenceMs >= 240) {
       candidate.finishing = true;
       void candidate.live.finish(AbortSignal.any([candidate.control.signal, AbortSignal.timeout(3500)])).then(text => {
         if (this.bargeCandidate !== candidate) return;
-        if (!text.trim() || isBackchannel(text)) this.cancelBarge();
+        const echo = candidate.echoGuard && isPlaybackEcho(text, this.bargePlayback(candidate));
+        if (!text.trim() || isBackchannel(text) || echo)
+          this.dismissBarge(candidate, echo ? "playback_echo" : "no_interruption");
+        else if (candidate.continued) this.confirmBarge(candidate, true, "distinct_continuation");
         else {
           const pcm = Buffer.concat(candidate.frames);
-          this.confirmBarge(candidate, false);
-          void this.process(pcm, text);
+          this.confirmBarge(candidate, false, "recognized_speech");
+          void this.process(pcm, text, null, candidate.live.speaker);
         }
-      }).catch(() => { if (this.bargeCandidate === candidate) this.cancelBarge(); });
+      }).catch(() => this.dismissBarge(candidate, "recognition_failed"));
     }
   }
-  confirmBarge(candidate, capture = true) {
+  confirmBarge(candidate, capture = true, reason = "speech") {
     if (this.bargeCandidate !== candidate) return;
-    Object.assign(candidate.diagnostic, { state: "confirmed", elapsedMs: Date.now() - candidate.startedAt });
+    Object.assign(candidate.diagnostic, { state: "confirmed", reason, elapsedMs: Date.now() - candidate.startedAt });
     const frames = candidate.frames;
     this.bargeCandidate = null;
     candidate.control.abort(); candidate.live.close();
@@ -917,7 +1003,7 @@ export class VoiceConnection {
     if (!this.live && (this.buffer.started || finished)) {
       this.live = new LiveTranscriber(
         this.store.settings(),
-        this.engine.context(this.session.id),
+        this.asrContext(),
         (text) => { this.turnDetector.partial(text); this.send({ type: "partial", text }); },
       );
       // Include only bounded pre-roll and this utterance, not the idle minutes.
@@ -946,6 +1032,9 @@ export class VoiceConnection {
     }
   }
   async startRealtime() {
+    if (this.gateway.people?.active() && !this.options.browser) {
+      this.send({ type: "voice_mode", mode: "cascade", reason: "多人档案使用逐句声纹识别" }); return;
+    }
     if (this.realtime) { this.realtime.setMuted(!this.call.acceptingAudio); return; }
     const settings = this.store.settings();
     const tools = this.engine.voiceTools();
@@ -978,7 +1067,11 @@ export class VoiceConnection {
       if (this.realtime === remote) { this.error(error); this.close(); }
     }
   }
-  async process(pcm, text, remoteTurn) {
+  asrContext() {
+    return this.gateway.people?.active() && !this.options.browser
+      ? this.gateway.people.voiceContext() : this.engine.context(this.session.id);
+  }
+  async process(pcm, text, remoteTurn, speaker) {
     const remote = this.realtime;
     const live = this.live;
     this.live = null;
@@ -995,6 +1088,8 @@ export class VoiceConnection {
     let speechError = null;
     let speaking = false;
     let nativeUsed = false, nativePlayback = null;
+    let streamingSpeech = null, streamingText = "", streamingStartedAt = null;
+    let endIntent = Promise.resolve(null);
     const active = () =>
       !signal.aborted &&
       generation === this.generation &&
@@ -1003,21 +1098,34 @@ export class VoiceConnection {
       if (!value.trim()) return;
       const previousPlayback = speech;
       const settings = this.store.settings();
-      // Prepare complete short clauses so provider packet gaps cannot cut a
-      // word in half. The next clause can synthesize while this one plays.
-      // Gate the third preparation on the first playback: at most the current
-      // and one following clause hold PCM (4 MiB each), with one HTTP request.
+      const profile = speechProfile(settings);
+      this.mark(turn, "firstSegmentMs", Date.now() - turn.lastSpeechAt);
+      // A fast source can start after a small reserve; a slow source waits for
+      // the whole clause. Download is independent of paced device playback.
+      // Only one TTS request and one following clause may be prefetched.
       const ready = preparation.then(async () => {
         if (!active() || speechError) return null;
         const started = Date.now();
-        const audio = await synthesize(settings.models.tts, value, signal, { maxBytes: 4 * 1024 * 1024 });
+        const connection = this;
+        async function* measured() {
+          for await (const bytes of streamSpeech(profile, value, signal)) {
+            connection.mark(turn, "ttsFirstByteWaitMs", Date.now() - started);
+            yield bytes;
+          }
+        }
+        const audio = bufferSpeech(measured(), {
+          sampleRate: profile.pcmSampleRate || 24000, signal,
+        });
+        audio.completion.then(() => {
+          turn.timings.ttsPreparationMaxMs = Math.max(turn.timings.ttsPreparationMaxMs || 0, Date.now() - started);
+        }, e => { speechError ||= e; });
+        await audio.ready;
         this.mark(turn, "ttsFirstReadyMs", Date.now() - turn.startedAt);
-        turn.timings.ttsPreparationMaxMs = Math.max(turn.timings.ttsPreparationMaxMs || 0, Date.now() - started);
         return audio;
       });
       // Observe failures immediately even when the preceding clause is paused.
       ready.catch(e => { speechError ||= e; });
-      preparation = ready.catch(() => {}).then(() => previousPlayback);
+      preparation = ready.then(audio => audio?.completion).catch(() => {}).then(() => previousPlayback);
       speech = previousPlayback
         .then(async () => {
           const audio = await ready;
@@ -1026,7 +1134,7 @@ export class VoiceConnection {
             speaking = true;
             this.send({ type: "tts", state: "start" });
           }
-          await this.speak(value, signal, active, turn, [audio.pcm], settings);
+          await this.speak(value, signal, active, turn, audio.audio, settings);
         })
         .catch((e) => {
           speechError ||= e;
@@ -1036,14 +1144,15 @@ export class VoiceConnection {
     try {
       const asrStarted = Date.now();
       if (text == null) {
-        if (live) text = await live.finish(signal);
+        if (live) { text = await live.finish(signal); speaker = live.speaker; }
         else {
           const transcriber = new LiveTranscriber(
             this.store.settings(),
-            this.engine.context(this.session.id),
+            this.asrContext(),
           );
           transcriber.push(pcm);
           text = await transcriber.finish(signal);
+          speaker = transcriber.speaker;
         }
         if (active())
           this.send({
@@ -1062,23 +1171,113 @@ export class VoiceConnection {
         return;
       }
       this.lastConversationActivity = Date.now();
-      this.ensureSession();
-      this.saveConversation();
-      this.send({ type: "stt", text });
-      if (isFarewell(text, this.store.settings().assistant.name)) {
+      const addressed = correctAssistantAddress(text, this.store.settings());
+      let turnEngine = this.engine, turnStore = this.store, sessionId = this.session.id;
+      if (this.gateway.people?.active() && !this.options.browser) {
+        const bundle = this.gateway.people.voiceBundle(speaker);
+        // Keep only the last attribution in RAM: no transcript, raw audio or
+        // provider voice identifiers are needed to diagnose an unknown turn.
+        this.lastSpeaker = { at: new Date().toISOString(), status: bundle ? "matched" : "unknown",
+          ...(bundle ? { personId: bundle.person.id, name: bundle.person.name } : { reason: speaker?.reason || "no_identity_result" }),
+          ...(speaker?.diagnostic ? { diagnostic: speaker.diagnostic } : {}) };
+        if (!bundle) {
+          if (isFarewell(addressed, this.store.settings().assistant.name)) { this.endConversation(); return; }
+          turn.guest = true;
+          this.lastSpeaker.responseMode = "guest";
+          this.send({ type: "speaker", status: "unknown", mode: "guest" });
+        } else {
+          turnEngine = bundle.engine; turnStore = bundle.store;
+          sessionId = this.gateway.people.voiceSession(bundle, this.session.id, this.options.device.id).id;
+          this.send({ type: "speaker", status: "matched", personId: bundle.person.id, name: bundle.person.name });
+        }
+      }
+      if (!turn.guest) {
+        turn.personalStore = turnStore;
+        this.ensureSession();
+        this.saveConversation();
+      }
+      this.send({ type: "stt", text: addressed });
+      if (isFarewell(addressed, this.store.settings().assistant.name)) {
         // End before refinement, routing, memory, chat or speech generation.
         // Cancel outstanding work and stop any audio already queued by clients.
-        const message = this.store.message(this.session.id, "user", text, {
+        const message = turnStore.message(sessionId, "user", addressed, {
+          rawText: text,
           metadata: { voiceCommand: "farewell" },
         });
         if (this.options.browser) this.send({ type: "user", message });
         this.endConversation();
         return;
       }
-      const visual = await this.requestVision(turn, signal);
+      // Start independently of replying and TTS, so normal first audio does not
+      // wait for this short classification. Guest input stays stateless.
+      endIntent = conversationEndIntent(this.store.settings(), addressed, signal);
+      const visual = turn.guest ? null : await this.requestVision(turn, signal);
       if (!active()) return;
-      const result = await this.engine.run({
-        sessionId: this.session.id,
+      const speechSettings = this.store.settings();
+      if (speechSettings.input.ttsProvider === "volcengine" && !remoteTurn) {
+        const profile = speechProfile(speechSettings);
+        const key = JSON.stringify(profile);
+        if (!this.streamingTts || this.streamingTtsKey !== key) {
+          this.streamingTts?.close();
+          this.streamingTts = new VolcengineTts(profile);
+          this.streamingTtsKey = key;
+        }
+        streamingSpeech = this.streamingTts.session(signal);
+        const connection = this;
+        async function* measured() {
+          for await (const bytes of streamingSpeech.audio) {
+            if (streamingStartedAt != null) connection.mark(turn, "ttsFirstByteWaitMs", Date.now() - streamingStartedAt);
+            yield bytes;
+          }
+          await streamingSpeech.completion;
+        }
+        const audio = bufferSpeech(measured(), { sampleRate: profile.pcmSampleRate || 24000, signal, continuous: true });
+        speech = (async () => {
+          await audio.ready;
+          if (!active()) return;
+          this.mark(turn, "ttsFirstReadyMs", Date.now() - turn.startedAt);
+          speaking = true;
+          this.send({ type: "tts", state: "start" });
+          await this.speak(() => streamingText, signal, active, turn, audio.audio, speechSettings);
+          await audio.completion;
+        })().catch(error => {
+          speechError ||= error;
+          // A failed consumer must release its upstream session immediately;
+          // otherwise the next turn can remain blocked by unfinished synthesis.
+          streamingSpeech.cancel();
+        });
+      }
+      const emit = (event) => {
+        if (["done", "interrupted"].includes(event.type) && event.message) {
+          turn.messageId = event.message.id;
+          this.savePlayback(turn);
+        }
+        if (!active()) return;
+        if (event.type === "audio") {
+          if (!speaking) { speaking = true; this.send({ type: "tts", state: "start" }); }
+          nativePlayback ||= new StreamingPlayback(this, turn, signal, active);
+          return nativePlayback.push(event.audio);
+        }
+        if (event.type === "audio_end") return nativePlayback?.finish(remoteTurn.text);
+        if (this.options.browser) this.send(event);
+        if (event.type === "delta") {
+          this.mark(turn, "firstTextMs", Date.now() - turn.lastSpeechAt);
+          if (!nativeUsed) {
+            remote?.cancel(remoteTurn);
+            if (streamingSpeech) {
+              streamingText += event.text;
+              streamingStartedAt ??= Date.now();
+              this.mark(turn, "firstSegmentMs", Date.now() - turn.lastSpeechAt);
+              streamingSpeech.write(event.text);
+            } else segments.push(event.text);
+          }
+        }
+      };
+      const result = turn.guest
+        ? await guestReply(this.store.settings(), addressed, signal, emit)
+        : await turnEngine.run({
+        sessionId,
+        speaker: this.options.browser ? { method: "manual", personId: this.options.personId } : speaker,
         text,
         source: this.options.browser ? "browser-voice" : this.options.device.id,
         outputMode: "voice",
@@ -1092,26 +1291,11 @@ export class VoiceConnection {
           cancel: () => { remote.cancel(remoteTurn); if (active()) this.send({ type: "voice_mode", mode: "cascade", reason: "本轮使用现有场景模型与确认流程" }); },
           stream: (...args) => { nativeUsed = true; return remote.stream(remoteTurn, ...args); },
         } : undefined,
-        emit: (event) => {
-          if (["done", "interrupted"].includes(event.type) && event.message) {
-            turn.messageId = event.message.id;
-            this.savePlayback(turn);
-          }
-          if (!active()) return;
-          if (event.type === "audio") {
-            if (!speaking) { speaking = true; this.send({ type: "tts", state: "start" }); }
-            nativePlayback ||= new StreamingPlayback(this, turn, signal, active);
-            return nativePlayback.push(event.audio);
-          }
-          if (event.type === "audio_end") return nativePlayback?.finish(remoteTurn.text);
-          if (this.options.browser) this.send(event);
-          if (event.type === "delta") {
-            this.mark(turn, "firstTextMs", Date.now() - turn.lastSpeechAt);
-            if (!nativeUsed) { remote?.cancel(remoteTurn); segments.push(event.text); }
-          }
-        },
+        emit,
       });
-      segments.finish();
+      if (streamingSpeech) void streamingSpeech.finish().catch(error => { speechError ||= error; });
+      else segments.finish();
+      turn.farewell = (await endIntent) === true || result.farewell;
       await speech;
       turn.generated = true;
       this.savePlayback(turn);
@@ -1126,15 +1310,17 @@ export class VoiceConnection {
       if (active()) {
         this.send({ type: "tts", state: "stop", ...(speechError ? { interrupted: true } : {}) });
         if (speechError || !turn.acknowledged || turn.segments.every(s => s.finished && s.playedMs >= s.durationMs))
-          this.state = result.farewell ? "idle" : "listening";
+          this.state = turn.farewell ? "idle" : "listening";
         this.startedAt = Date.now();
         this.lastConversationActivity = this.startedAt;
         this.saveConversation();
-        if (result.farewell) {
+        if (turn.farewell) {
           this.endConversation();
         }
       }
     } catch (e) {
+      streamingSpeech?.cancel();
+      turn.farewell ||= (await endIntent) === true;
       if (active()) {
         // Cancel queued and in-flight audio before returning to listening.
         // Otherwise a slow synthesis can start playing after the error stop.
@@ -1146,14 +1332,15 @@ export class VoiceConnection {
         ) {
           this.error(e);
           this.send({ type: "tts", state: "stop", interrupted: true });
-          this.state = "listening";
+          if (turn.farewell) this.endConversation();
+          else this.state = "listening";
           this.startedAt = Date.now();
         }
       }
     } finally {
       segments.close();
       live?.close();
-      if (remoteTurn && remote && !this.store.closed) {
+      if (!turn.guest && remoteTurn && remote && !this.store.closed) {
         // Cloud context must follow what was actually heard. Health details and
         // memory/settings operation transcripts are never seeded as chat history.
         turn.remoteContext = { remote, remoteTurn, text };
@@ -1179,13 +1366,21 @@ export class VoiceConnection {
       if (signal.aborted) abort();
     });
   }
+  outputVolume(settings = this.store.settings()) {
+    const gain = this.config.volume * (isNight(settings) ? settings.assistant.night.volume : 1);
+    // Lip-sync generation needs the original signal. Apply listening preferences
+    // after the avatar returns its synchronized media, not to its driving PCM.
+    return this.options.browser && this.features?.avatar_audio === true
+      ? { pcmGain: 1, playbackGain: gain }
+      : { pcmGain: gain };
+  }
   async speak(text, signal, active, turn = this.turns.get(this.call.turnId), source = null, settings = this.store.settings()) {
-    const segment = { id: turn?.segments.length || 0, text, durationMs: 0, playedMs: 0, finished: false };
+    const currentText = () => typeof text === "function" ? text() : text;
+    const segment = { id: turn?.segments.length || 0, text: currentText(), durationMs: 0, playedMs: 0, finished: false };
     turn?.segments.push(segment);
-    const converter = new PcmResampler(settings.models.tts.pcmSampleRate || 24000);
-    const gain =
-      this.config.volume *
-      (isNight(settings) ? settings.assistant.night.volume : 1);
+    const profile = speechProfile(settings);
+    const converter = new PcmResampler(profile.pcmSampleRate || 24000);
+    const { pcmGain: gain, playbackGain } = this.outputVolume(settings);
     let pending = Buffer.alloc(0), first = true;
     const sendFrames = async (bytes, final = false) => {
       pending = Buffer.concat([pending, bytes]);
@@ -1203,7 +1398,8 @@ export class VoiceConnection {
           this.state = "speaking";
           this.mark(turn, "firstAudioMs", Date.now() - (turn?.lastSpeechAt || Date.now()));
           if (turn?.wake) turn.wake.firstAudioSentMs = Date.now() - turn.startedAt;
-          this.send({ type: "tts", state: "sentence_start", text, segment_id: segment.id, turn_id: turn?.id ?? this.call.turnId });
+          this.send({ type: "tts", state: "sentence_start", text: currentText(), segment_id: segment.id, turn_id: turn?.id ?? this.call.turnId,
+            ...(playbackGain != null ? { playback_gain: playbackGain } : {}) });
         }
         segment.durationMs += 20;
         const data = this.options.browser ? frame : Buffer.from(this.encoder.encode(frame, 320));
@@ -1212,17 +1408,19 @@ export class VoiceConnection {
         this.recordAudioSent(turn, pacer);
       }
     };
-    for await (const bytes of source || streamSpeech(settings.models.tts, text, signal)) {
+    for await (const bytes of source || streamSpeech(profile, currentText(), signal)) {
       if (!active()) return;
       await sendFrames(converter.push(bytes));
     }
     await sendFrames(converter.push(Buffer.alloc(0), true), true);
     if (!active()) return;
+    segment.text = currentText();
     segment.finished = true;
-    this.send({ type: "tts", state: "sentence_end", segment_id: segment.id, duration_ms: segment.durationMs, turn_id: turn?.id ?? this.call.turnId });
+    this.send({ type: "tts", state: "sentence_end", text: segment.text, segment_id: segment.id, duration_ms: segment.durationMs, turn_id: turn?.id ?? this.call.turnId });
   }
   async greet() {
     this.abort();
+    this.inputAudio = null;
     this.lastConversationActivity = Date.now();
     this.state = "thinking";
     this.controller = new AbortController();
@@ -1251,6 +1449,7 @@ export class VoiceConnection {
     if (this.greetingGeneration === generation) this.greetingGeneration = null;
     if (!signal.aborted) {
       turn.generated = true;
+      turn.wake.completed = true;
       this.send({ type: "tts", state: "stop" });
       if (!turn.acknowledged || turn.segments.every(s => s.finished && s.playedMs >= s.durationMs)) this.state = "listening";
       this.startedAt = Date.now();

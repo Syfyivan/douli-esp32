@@ -1,12 +1,35 @@
 import { randomUUID } from "node:crypto";
 import { complete } from "./providers.mjs";
 
-export function applyDictionary(text, entries) {
+export function correctAssistantAddress(text, settings) {
+  if (!settings.input.correctAssistantName) return text;
+  const name = settings.assistant.name;
+  // Only standalone greetings or an explicit vocative before an assistant request.
+  // Reported speech, quoted phrases and mentions of other people remain verbatim.
+  if (/[“”「」『』"'《》]/.test(text)) return text;
+  for (const alias of settings.input.assistantAliases || []) {
+    if (!alias || alias === name) continue;
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const greeting = new RegExp(`^(你好|您好|嗨|嘿|早上好|早安|晚安|晚上好|再见|拜拜|谢谢)[，,、\\s]*(${escaped})([啊呀呢哦吧]*[。！!？?，,\\s]*)$`, "u");
+    const direct = new RegExp(`^(${escaped})([，,、\\s]+)(?=(?:你好|再见|拜拜|晚安|谢谢|你在吗|在吗|请|帮我|给我|告诉我|能不能|能帮我|可以帮我))`, "u");
+    if (greeting.test(text)) return text.replace(greeting, (_, prefix, _alias, ending) => `${prefix}，${name}${ending}`);
+    if (direct.test(text)) return text.replace(direct, (_, _alias, comma) => name + comma);
+  }
+  return text;
+}
+
+export function applyDictionary(text, entries, { voice = false } = {}) {
   let output = text;
   for (const e of [...entries]
     .filter((e) => e.status === "active")
     .sort((a, b) => b.phrase.length - a.phrase.length)) {
     if (!e.phrase || e.phrase === e.replacement) continue;
+    if (e.scope === "assistant_address") {
+      if (voice) output = correctAssistantAddress(output, {
+        assistant: { name: e.replacement }, input: { correctAssistantName: true, assistantAliases: [e.phrase] },
+      });
+      continue;
+    }
     const escaped = e.phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     output = output.replace(
       new RegExp(
@@ -44,9 +67,10 @@ export function validateRefinement(raw, proposed, mode) {
   }
   return true;
 }
-export async function processInput(store, raw, context = "", signal) {
+export async function processInput(store, raw, context = "", signal, { voice = false } = {}) {
   const settings = store.settings();
-  const corrected = applyDictionary(raw.trim(), store.all("dictionary"));
+  const addressed = voice ? correctAssistantAddress(raw.trim(), settings) : raw.trim();
+  const corrected = applyDictionary(addressed, store.all("dictionary"), { voice });
   if (!settings.input.refine)
     return {
       raw,
@@ -174,13 +198,14 @@ export function recordCorrection(store, messageId, text) {
     .run(new Date().toISOString(), messageId);
   if (pair)
     store.db
-      .prepare("INSERT INTO dictionary VALUES (?,?,?,?,?)")
+      .prepare("INSERT INTO dictionary (id,phrase,replacement,status,created_at,scope) VALUES (?,?,?,?,?,?)")
       .run(
         randomUUID(),
         pair.phrase,
         pair.replacement,
         "suggested",
         new Date().toISOString(),
+        pair.replacement === store.settings().assistant.name ? "assistant_address" : "global",
       );
   store.event("transcript_corrected", {
     messageId,

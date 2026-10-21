@@ -64,7 +64,7 @@ export class ChatEngine {
       recent: sessionId
         ? this.store
             .messages(sessionId)
-            .filter(m => !m.metadata?.memoryOperation && !m.metadata?.assistantControl && !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id))
+            .filter(m => !m.metadata?.healthPrivate && !m.metadata?.memoryOperation && !m.metadata?.assistantControl && !m.metadata?.computerTask && !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id))
             .slice(-6)
             .map((m) => ({ role: m.role, text: audibleContext(m) }))
         : [],
@@ -74,7 +74,7 @@ export class ChatEngine {
     this.active.get(sessionId)?.abort(new Error("对话已停止"));
   }
   systemPrompt(options = {}) {
-    return buildSystemPrompt({
+    const prompt = buildSystemPrompt({
       ...options,
       settings: options.settings || this.store.settings(),
       tools: options.tools || this.voiceTools(),
@@ -85,6 +85,7 @@ export class ChatEngine {
         })),
       } : null,
     });
+    return this.person ? prompt + `\n当前个人档案称呼：${JSON.stringify(this.person.name)}。只使用此档案的资料，不推断其他家庭成员的情况。` : prompt;
   }
   voiceTools() {
     const settings = this.store.settings();
@@ -145,6 +146,7 @@ export class ChatEngine {
     volumeControl,
     visual,
     realtime,
+    speaker,
   }) {
     const session = this.store.session(sessionId, source);
     this.abort(session.id);
@@ -159,6 +161,7 @@ export class ChatEngine {
     let selectedRoute;
     let routing;
     const toolResults = [];
+    const modelUsage = [];
     const executedActions = new Map();
     const timings = { startedAt: Date.now() };
     try {
@@ -183,6 +186,7 @@ export class ChatEngine {
         text,
         this.context(session.id),
         currentSignal,
+        { voice: outputMode === "voice" },
       );
       if (!input.text.trim()) throw new Error("没有识别到有效内容");
       const settings = this.store.settings();
@@ -202,6 +206,12 @@ export class ChatEngine {
         emit({ type: "vision_status", message: "已使用本轮画面，原图不保存" });
       }
       if (selectedRoute === "health" && this.health && !memoryIntent(input.text) && !this.memoryDialogue.pending(session.id)) {
+        if (speaker?.method === "voiceprint") {
+          const response = "涉及个人健康资料，请先在豆梨页面选择自己的档案，再进入健康资料继续。声音识别不能代替身份确认。";
+          const message = this.store.message(session.id, "assistant", response, { route: "health", metadata: { healthPrivate: true } });
+          emit({ type: "delta", text: response }); emit({ type: "done", message });
+          return { session, message, text: response, farewell: false };
+        }
         // Health turns live only in the encrypted vault. Normal chat and memory
         // tables retain opaque references, never copies of reports or diagnoses.
         savedUser = this.store.message(session.id, "user", "健康问题（保存在加密健康档案）", {
@@ -257,7 +267,9 @@ export class ChatEngine {
         return { session, message, text: operation.text, input: savedUser, farewell: false };
       }
       this.store.db.prepare("UPDATE messages SET metadata=? WHERE id=?").run(JSON.stringify(savedUser.metadata), savedUser.id);
+      const contextStartedAt = Date.now();
       const memoryContext = await this.memory.context(input.text, currentSignal);
+      timings.contextMs = Date.now() - contextStartedAt;
       const memories = memoryContext.facts;
       const tools = this.voiceTools();
       const system = this.systemPrompt({ settings, route: selectedRoute,
@@ -294,6 +306,8 @@ export class ChatEngine {
         emit({ type: "voice_mode", mode: routing.voiceMode, reason: useRealtime ? "实时语音陪伴" : "本轮使用场景模型与现有工具流程" });
       }
       for (let turn = 0; turn < 4; turn++) {
+        const modelStartedAt = Date.now();
+        timings.beforeModelMs ??= modelStartedAt - timings.startedAt;
         let toolCalls = null;
         let turnText = "";
         let reasoningContent;
@@ -305,10 +319,13 @@ export class ChatEngine {
         )) {
           if (currentSignal.aborted) throw currentSignal.reason;
           if (event.type === "text") {
+            timings.modelFirstTokenMs ??= Date.now() - modelStartedAt;
             timings.firstTokenAt ||= Date.now();
             answer += event.text;
             turnText += event.text;
             emit({ type: "delta", text: event.text });
+          } else if (event.type === "usage") {
+            modelUsage.push(event.usage);
           } else if (event.type === "audio" || event.type === "audio_end") {
             await emit(event);
           } else if (event.type === "model") {
@@ -388,11 +405,15 @@ export class ChatEngine {
         metadata: {
           routing,
           tools: toolResults,
+          ...(modelUsage.length ? { modelUsage } : {}),
           ...(savedUser.metadata.computerTask ? { computerTask: true } : {}),
           memories: [...new Set([...memories, ...memoryContext.core].map(m => m.id).filter(Boolean))],
           memoryRetrieval: { mode: memoryContext.mode, estimatedTokens: memoryContext.estimatedTokens, episodes: memoryContext.episodes.map(e => e.id) },
           timings: {
             routingMs: routing.routingMs,
+            contextMs: timings.contextMs,
+            beforeModelMs: timings.beforeModelMs,
+            modelFirstTokenMs: timings.modelFirstTokenMs,
             firstTokenMs: timings.firstTokenAt - timings.startedAt,
             totalMs: Date.now() - timings.startedAt,
           },
