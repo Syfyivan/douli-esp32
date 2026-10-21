@@ -17,13 +17,13 @@ export function VideoCallPage({
     return () => clearInterval(timer);
   }, [active, connecting]);
   const status = !active ? "准备就绪"
-    : connecting ? avatarStatus === "ready" ? "正在准备麦克风…" : "正在连接形象…"
+    : connecting ? ({ preparing: "正在准备通话…", connecting: "正在建立视频连接…", starting: "正在等待形象画面…", ready: "正在准备麦克风…" }[avatarStatus] || "正在连接形象…")
     : flags.paused ? "通话已暂停"
     : voiceState === "speaking" ? `${name}正在说话`
     : voiceState === "thinking" ? `${name}正在想…`
     : flags.muted ? "麦克风已静音"
     : "正在听你说";
-  const showVideo = active && !["off", "connecting"].includes(avatarStatus);
+  const showVideo = active && ["ready", "audio-blocked"].includes(avatarStatus);
   const duration = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
   return <section className="video-room" aria-label="视频通话">
@@ -73,6 +73,7 @@ export function VideoCallPage({
               <button disabled={connecting} onClick={onInterrupt}><Square size={17} /><span>打断回答</span></button>
             </>}
             {Number.isFinite(metrics?.avatarAudioMs) && <small className="video-room-latency">形象音频返回 {(metrics.avatarAudioMs / 1000).toFixed(2)} 秒</small>}
+            {Number.isFinite(metrics?.avatarConnectMs) && <small className="video-room-latency">形象连接 {(metrics.avatarConnectMs / 1000).toFixed(2)} 秒</small>}
           </div>
         </details>
       </div>

@@ -11,6 +11,8 @@ export class AvatarVoice extends BrowserVoice {
       onError: message => { this.onEvent?.({ type: "error", message }); this.stop(); },
       onSpeaking: speaking => { this.avatarSpeaking = speaking; if (!speaking) this.finishPlayback(); },
       onAudioBlocked: () => onAvatarStatus?.("audio-blocked"),
+      onProgress: status => onAvatarStatus?.(status),
+      onConnected: timings => this.onEvent?.({ type: "metric", name: "avatarConnectMs", value: timings.totalMs }),
       onMetric: metric => {
         if (this.closed || this.flags.paused || metric.turn_id !== this.turnId || metric.turn_id <= this.rejectedThrough) return;
         this.send({ type: "avatar_metric", ...metric });
