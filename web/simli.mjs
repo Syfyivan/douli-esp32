@@ -1,5 +1,6 @@
 // Implements Simli's public Compose P2P protocol. No microphone track is added.
 // https://docs.simli.com/api-reference/websockets/peer_to_peer
+import { waitForAvatarIce } from "./avatar-ice.mjs";
 export function normalizeAvatarVolume(value) {
   if (value == null || value === "") return 2;
   const number = Number(value);
@@ -7,8 +8,8 @@ export function normalizeAvatarVolume(value) {
 }
 
 export class SimliTransport {
-  constructor({ video, audio, volume, onError, onSpeaking, onAudioBlocked, onMetric }) {
-    Object.assign(this, { video, audio, onError, onSpeaking, onAudioBlocked, onMetric });
+  constructor({ video, audio, volume, onError, onSpeaking, onAudioBlocked, onMetric, onProgress, onConnected }) {
+    Object.assign(this, { video, audio, onError, onSpeaking, onAudioBlocked, onMetric, onProgress, onConnected });
     this.volume = normalizeAvatarVolume(volume);
     this.playbackGain = 1;
     this.closed = false;
@@ -75,11 +76,16 @@ export class SimliTransport {
   }
   async start() {
     try {
+      const began = performance.now();
+      this.connectionTimings = {};
+      this.onProgress?.("preparing");
       this.timer = setTimeout(() => this.fail("实时形象连接超时，请检查网络或稍后重试"), 45000);
       const r = await fetch("/api/avatar/session", { method: "POST", signal: this.abort.signal });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || "无法创建实时形象通话");
       if (this.closed) throw new Error("通话已取消");
+      this.connectionTimings.prepareMs = Math.round(performance.now() - began);
+      this.onProgress?.("connecting");
       this.pc = new RTCPeerConnection({ iceServers: data.iceServers });
       this.pc.addTransceiver("audio", { direction: "recvonly" });
       this.pc.addTransceiver("video", { direction: "recvonly" });
@@ -87,7 +93,12 @@ export class SimliTransport {
       // Attach rejection immediately while ICE and the websocket are opening.
       ready.catch(() => {});
       this.video.onloadeddata = () => {
-        if (!this.closed) { this.started = true; clearTimeout(this.timer); this.resolveReady?.(); }
+        if (!this.closed && !this.started) {
+          this.started = true; clearTimeout(this.timer);
+          this.connectionTimings.totalMs = Math.round(performance.now() - began);
+          this.onConnected?.({ ...this.connectionTimings });
+          this.resolveReady?.();
+        }
       };
       this.pc.ontrack = ({ track, streams }) => {
         if (this.closed) return;
@@ -130,16 +141,13 @@ export class SimliTransport {
       if (this.closed) throw new Error("通话已取消");
       await this.pc.setLocalDescription(offer);
       if (this.closed) throw new Error("通话已取消");
-      // Non-trickle ICE: send the offer with gathered candidates, not an early empty SDP.
-      if (this.pc.iceGatheringState !== "complete") await new Promise((resolve, reject) => {
-        this.rejectIce = reject;
-        const done = () => { clearTimeout(this.iceTimer); this.pc.onicegatheringstatechange = null; resolve(); };
-        this.pc.onicegatheringstatechange = () => { if (this.pc.iceGatheringState === "complete") done(); };
-        this.iceTimer = setTimeout(done, 8000);
-        if (this.pc.iceGatheringState === "complete") done();
-      });
+      const iceBegan = performance.now();
+      this.connectionTimings.iceResult = await waitForAvatarIce(this.pc, this.abort.signal);
+      this.connectionTimings.iceMs = Math.round(performance.now() - iceBegan);
       await opened;
       if (this.closed) throw new Error("通话已取消");
+      this.onProgress?.("starting");
+      this.connectionTimings.offerMs = Math.round(performance.now() - began);
       this.ws.send(JSON.stringify(this.pc.localDescription));
       await ready;
     } catch (error) { const failure = this.failure || error; this.stop(failure); throw failure; }
@@ -195,14 +203,14 @@ export class SimliTransport {
     if (this.meter) this.meter.port.onmessage = null;
     for (const node of [this.remoteSource, this.meter, this.volumeGain, this.compressor, this.outputGate]) node?.disconnect();
     this.abort.abort();
-    for (const timer of [this.timer, this.disconnectTimer, this.iceTimer]) clearTimeout(timer);
-    this.rejectOpen?.(error); this.rejectIce?.(error); this.rejectReady?.(error);
+    for (const timer of [this.timer, this.disconnectTimer]) clearTimeout(timer);
+    this.rejectOpen?.(error); this.rejectReady?.(error);
     if (this.ws) {
       this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
       if (this.ws.readyState === WebSocket.OPEN) this.ws.send("DONE");
       this.ws.close();
     }
-    if (this.pc) { this.pc.ontrack = this.pc.onconnectionstatechange = this.pc.onicegatheringstatechange = null; this.pc.close(); }
+    if (this.pc) { this.pc.ontrack = this.pc.onconnectionstatechange = this.pc.onicegatheringstatechange = this.pc.onicecandidate = null; this.pc.close(); }
     for (const element of [this.video, this.audio]) {
       element.onloadeddata = null; element.muted = true; element.pause(); element.srcObject = null;
     }
