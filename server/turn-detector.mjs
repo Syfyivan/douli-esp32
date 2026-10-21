@@ -2,7 +2,14 @@ import { complete } from "./providers.mjs";
 
 export const isBackchannel = text => /^(嗯+|恩+|哦+|噢+|啊+|对|对对|好的?|是的|明白了?|知道了)[，。！!\s]*$/u.test(text.trim());
 export const isExplicitInterruption = text => /^(等一下|等等|停一下|停|别说了|不是|不对|先别|暂停|打断)/u.test(text.trim());
-const incomplete = text => /(?:我想|我觉得|我在想|怎么说呢|那个|嗯|呃|然后|因为|所以|但是|如果|比如|首先|还有|以及|就是|让我想想|等我想一下)[，,、…\s]*$/u.test(text.trim());
+const speechText = text => String(text || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+// A transcript copied from audio currently being sent is not evidence of a
+// second speaker. This supplements device AEC; it is not acoustic cancellation.
+export function isPlaybackEcho(text, spoken) {
+  const input = speechText(text), output = speechText(spoken);
+  return input.length >= 2 && output.includes(input);
+}
+const incomplete = text => /(?:我想|我觉得|我在想|怎么说呢|那个|嗯|呃|然后|因为|所以|但是|如果|比如|首先|还有|以及|就是|让我想想|等我想一下|我还没说完|等一下)[，,、…。.!！?？\s]*$/u.test(text.trim());
 
 export class TurnDetector {
   constructor(settings, onDecision = () => {}) {
@@ -43,7 +50,7 @@ export class TurnDetector {
   }
   observeSilence(ms) {
     if (!this.settings.input.semanticEndpoint || ms < 300 || !this.text || this.request || this.decision || incomplete(this.text)) return;
-    const profile = this.settings.models.router;
+    const profile = this.settings.models.daily;
     if (!profile?.model || !profile.baseUrl) return;
     const control = this.request = new AbortController();
     const revision = this.revision;

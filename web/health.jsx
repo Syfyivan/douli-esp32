@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { HeartPulse, Plus, Trash2, FileText, Search, Download, RefreshCw, ChevronRight, ShieldCheck, Folder, Upload } from "lucide-react";
 import "./health.css";
+import { personUrl } from "./person-context.mjs";
 
 const kinds = { condition: "已确认病史", allergy: "过敏记录", medication: "用药记录", background: "其他健康背景" };
 const categories = { guideline: "诊疗指南", label: "药品说明书", patient: "疾病与检查解释", review: "证据综述" };
@@ -82,7 +83,7 @@ function ReportPreview({ id, onClose }) {
   useEffect(() => {
     let disposed = false, objectUrl;
     (async () => {
-      const response = await fetch(`/api/medical/reports/${id}/file`);
+      const response = await fetch(personUrl(`/api/medical/reports/${id}/file`));
       if (!response.ok) throw new Error("原始报告无法打开");
       if (response.headers.get("Content-Type")?.includes("pdf")) {
         const parsed = await pdfPages(new Uint8Array(await response.arrayBuffer()));
@@ -135,7 +136,7 @@ export function HealthPage({ api, Section, Field, Button, notify }) {
   const openReport = r => { setReport(structuredClone(r)); setChecked(!!r.confirmed); };
   const extract = () => run("识别报告中，请稍候", async () => {
     let pages;
-    const response = await fetch(`/api/medical/reports/${report.id}/file`);
+    const response = await fetch(personUrl(`/api/medical/reports/${report.id}/file`));
     if (!response.ok) throw new Error("无法读取报告原件");
     if (response.headers.get("Content-Type")?.includes("pdf")) pages = await pdfPages(new Uint8Array(await response.arrayBuffer()));
     const updated = await api(`/medical/reports/${report.id}/extract`, "POST", { revision: report.revision, pages });
@@ -175,7 +176,7 @@ export function HealthPage({ api, Section, Field, Button, notify }) {
           <div className="form-actions"><Button primary disabled={!!busy}>确认并保存</Button>{fact.id && <Button type="button" onClick={() => setFact({ ...blankFact })}>取消编辑</Button>}</div>
         </form>
       </Section>
-      <p className="small muted">档案、报告原件和健康问答使用本机密钥加密保存。导出的 JSON 是明文，请自行妥善保管。</p><a className="health-export" href="/api/medical/export" download><Download size={16} /> 导出健康记录</a>
+      <p className="small muted">档案、报告原件和健康问答使用本机密钥加密保存。导出的 JSON 是明文，请自行妥善保管。</p><a className="health-export" href={personUrl("/api/medical/export")} download><Download size={16} /> 导出健康记录</a>
     </>}
     {tab === "reports" && <>
       <Section title="检查报告" subtitle="支持 JPG、PNG、WebP、PDF；每份不超过10MB，PDF不超过12页。上传先保存在本机，点击识别才发送给模型。">

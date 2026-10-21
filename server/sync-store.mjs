@@ -83,6 +83,7 @@ export class SyncStore {
       const result={...meta,deleted:row ? 0 : 1,row:row || null};
       const encrypted = sealedColumn(meta.collection);
       if(row && encrypted) result.row={...row,[encrypted]:this.store.unseal(row[encrypted])};
+      if (row && meta.collection === "settings") delete result.row.value.people;
       return result;
     }).filter(Boolean);
     return { v:1,schema:this.schema(),rows };
@@ -116,6 +117,7 @@ export class SyncStore {
         if(change.deleted) this.db.prepare(`DELETE FROM ${quote(change.collection)} WHERE ${where}`).run(...change.keyValues);
         else {
           const row={...change.row};
+          if (change.collection === "settings") row.value = { ...row.value, people: this.store.settings().people };
           // Revision is a local editor guard: even equal remote revisions must
           // invalidate a form opened before this exchange.
           if (change.collection === "health_records") {

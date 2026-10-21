@@ -5,10 +5,12 @@ import {
   Sparkles,
   Brain,
   Radio,
+  Users,
   Settings,
   Plus,
   Mic,
   MicOff,
+  Video,
   Send,
   Square,
   Search,
@@ -26,6 +28,12 @@ import {
   BookOpen, FileText, LockKeyhole, Monitor, SlidersHorizontal, ShieldCheck, Cloud, ListChecks, ChevronDown,
 } from "lucide-react";
 import { BrowserVoice } from "./voice.mjs";
+import { AvatarVoice } from "./avatar-voice.mjs";
+import { VideoCallPage } from "./video-call.jsx";
+import { normalizeAvatarVolume } from "./simli.mjs";
+import { AvatarSettings } from "./avatar.jsx";
+import { PeoplePanel } from "./people.jsx";
+import { selectedPerson, personHeaders, personUrl, selectPerson } from "./person-context.mjs";
 import { NativeVoice } from "./native-voice.mjs";
 import { VisualInput } from "./visual-input.mjs";
 import "./styles.css";
@@ -43,8 +51,6 @@ const names = {
   auto: "自动选择",
   daily: "日常陪伴",
   learning: "知识学习",
-  router: "路由分类",
-  strong: "强模型",
   reasoning: "思考与解题",
   health: "健康问答",
   debate: "讨论与辨析",
@@ -56,6 +62,7 @@ const names = {
   rerank: "记忆重排",
   vision: "画面理解",
   streamingAsr: "火山流式识别",
+  streamingTts: "豆包流式合成",
   realtime: "火山全双工语音",
 };
 const time = (value) =>
@@ -70,7 +77,7 @@ const time = (value) =>
 async function api(path, method = "GET", body) {
   const r = await fetch("/api" + path, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : {},
+    headers: { ...personHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await r.json();
@@ -151,11 +158,14 @@ function Form({ submit, children, label = "保存", icon = Check }) {
 function App() {
   const [ui, setUi] = useState(readUiPreferences);
   const [state, setState] = useState(null),
-    [page, setPage] = useState(() => readUiPreferences().defaultPage),
+    [page, setCurrentPage] = useState(() => readUiPreferences().defaultPage),
     [toast, setToast] = useState(null),
     [fatal, setFatal] = useState("");
   const [profileTab, setProfileTab] = useState("memory");
   const [requestedSession, setRequestedSession] = useState(null);
+  const [settingsPanel, setSettingsPanel] = useState("models");
+  const setPage = next => { setSettingsPanel("models"); setCurrentPage(next); };
+  const openSettings = (panel = "models") => { setSettingsPanel(panel); setCurrentPage("settings"); };
   const stateRevision = useRef(0);
   const [nightSave, setNightSave] = useState({ patch: {}, status: "idle", error: "" });
   const nightWriter = useRef(null);
@@ -221,7 +231,7 @@ function App() {
         {fatal && <Button onClick={() => location.reload()}>重新连接</Button>}
       </div>
     );
-  const shared = { state, reload, act, notify, setPage, ui, updateUi, openConversation, openExperiences, saveNight, nightSave };
+  const shared = { state, reload, act, notify, setPage, openSettings, ui, updateUi, openConversation, openExperiences, saveNight, nightSave };
   return (
     <div className="app">
       <aside className="sidebar">
@@ -239,9 +249,13 @@ function App() {
           </span>
         </a>
         <div className="nav-label">我的空间</div>
+        {state.people?.people.length > 0 && <select aria-label="当前个人档案" value={selectedPerson()} onChange={e => selectPerson(e.target.value)}>
+          <option value="">原有档案</option>{state.people.people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>}
         <nav>
           {[
             ["chat", MessageCircle, "对话记录"],
+            ["video", Video, "视频通话"],
             ["assistant", Sparkles, "我的助手"],
             ["memory", BookOpen, "我的资料"],
             ...(ui.showDevices ? [["devices", Radio, "设备与家居"]] : []),
@@ -272,6 +286,7 @@ function App() {
             {
               {
                 chat: "对话记录",
+                video: "视频通话",
                 assistant: "我的助手",
                 memory: "我的资料",
                 devices: "设备与家居",
@@ -281,8 +296,8 @@ function App() {
           </b></span>
           <span className="local-badge"><LockKeyhole size={13} /> 本机空间</span>
         </header>
-        {page === "chat" && <Chat {...shared} requestedSession={requestedSession} />}
-        {page !== "chat" && (
+        {["chat", "video"].includes(page) && <Chat key={page} {...shared} view={page} requestedSession={page === "chat" ? requestedSession : null} />}
+        {!["chat", "video"].includes(page) && (
           <div className="page-content">
             {page === "assistant" && <AssistantPage {...shared} {...{ api, Section, Field, Button, Toggle }} />}{" "}
             {page === "memory" && <>
@@ -291,7 +306,7 @@ function App() {
               {profileTab === "health" ? <HealthPage {...shared} {...{ api, Section, Field, Button }} /> : <MemoryPage {...shared} view={profileTab} {...{ api, Section, Field, Form, Button }} />}
             </>}
             {page === "devices" && <Devices {...shared} />}{" "}
-            {page === "settings" && <SettingsPage {...shared} />}
+            {page === "settings" && <SettingsPage {...shared} initialPanel={settingsPanel} />}
           </div>
         )}
       </main>
@@ -308,7 +323,7 @@ function App() {
   );
 }
 
-function Chat({ state, act, notify, setPage, requestedSession, openExperiences }) {
+function Chat({ state, act, notify, setPage, openSettings, requestedSession, openExperiences, view = "chat" }) {
   const [composing, setComposing] = useState(false), [sourceFilter, setSourceFilter] = useState("all"), [dateFilter, setDateFilter] = useState("all");
   const initialized = useRef(false), opening = useRef(0), listing = useRef(0);
   const [sessions, setSessions] = useState([]),
@@ -316,7 +331,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
     [messages, setMessages] = useState([]),
     [query, setQuery] = useState(""),
     [text, setText] = useState(""),
-    [route, setRoute] = useState("auto"),
+    [route] = useState("auto"),
     [showHistory, setShowHistory] = useState(false);
   const [pending, setPending] = useState(""),
     [routeInfo, setRouteInfo] = useState(null),
@@ -328,6 +343,11 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
   const [voiceFlags, setVoiceFlags] = useState({}), [captions, setCaptions] = useState(() => localStorage.getItem("douli.captions") !== "off"), [spokenCaption, setSpokenCaption] = useState("");
   const voiceTurn = useRef(0);
   const [voiceModeLabel, setVoiceModeLabel] = useState("");
+  const [avatarStatus, setAvatarStatus] = useState("off");
+  const [avatarVolume, setAvatarVolume] = useState(() => {
+    try { return normalizeAvatarVolume(localStorage.getItem("douli.avatarVolume")); } catch { return 2; }
+  });
+  const avatarVideo = useRef(null), avatarAudio = useRef(null);
   const visual = useRef(null), visualPreview = useRef(null);
   const [visualSource, setVisualSource] = useState(""), [visionStatus, setVisionStatus] = useState("");
   const voice = useRef(null),
@@ -338,6 +358,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
     delta = useRef("");
   useEffect(() => { if (!composing && scrollPane.current) scrollPane.current.scrollTop = 0; }, [session?.id]);
   const loadSessions = async () => {
+    if (view === "video") return;
     const request = ++listing.current;
     try {
       const rows = await api("/sessions?q=" + encodeURIComponent(query));
@@ -408,7 +429,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
       setMetrics(null);
       setSpokenCaption("");
     }
-    if (e.type === "tts" && e.state === "sentence_start") setSpokenCaption(e.text);
+    if (e.type === "tts" && ["sentence_start", "sentence_end"].includes(e.state) && e.text) setSpokenCaption(e.text);
     if (e.type === "tts" && e.interrupted) { setSpokenCaption(""); setBusy(false); }
     if (e.type === "playback") setMessages(old => old.map(m => m.id === e.message_id ? { ...m, metadata: { ...m.metadata, voicePlayback: e } } : m));
     if (e.type === "hello" && e.session_id && !activeSession.current)
@@ -473,7 +494,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
   }, []);
   useEffect(() => {
     const attach = () => {
-      if (!window.douliNativeVoice || (voice.current && !voice.current.closed)) return;
+      if (view === "video" || selectedPerson() || !window.douliNativeVoice || (voice.current && !voice.current.closed)) return;
       const snapshot = window.douliNativeVoice.send({ action: "snapshot" });
       if (snapshot.active) {
         const client = new NativeVoice({ onEvent: event, onStatus: setVoiceState });
@@ -530,7 +551,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...personHeaders() },
         body: JSON.stringify({
           text: input,
           sessionId: activeSession.current?.id,
@@ -560,7 +581,8 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
       loadSessions();
     }
   };
-  const startVoice = async () => {
+  const startVoice = async (withAvatar = false) => {
+    withAvatar = withAvatar === true;
     if (voiceState !== "off") return stop();
     // An initial archive fetch must not stop a microphone the user just started.
     initialized.current = true;
@@ -568,16 +590,19 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
     if (
       !state.configured.daily ||
       !(state.settings.input.voiceMode === "realtime" ? state.configured.realtime : state.settings.input.asrProvider === "volcengine" ? state.configured.streamingAsr : state.configured.asr) ||
-      !state.configured.tts
+      !state.configured[state.settings.input.ttsProvider === "volcengine" ? "streamingTts" : "tts"]
     ) {
       notify("请先配置日常对话、所选语音服务和语音合成模型", true);
       setPage("settings");
       return;
     }
+    if (withAvatar && (!state.settings.avatar?.hasKey || !state.settings.avatar?.faceId)) {
+      notify("请先在设置 → 实时形象中保存 Simli 密钥和形象", true); openSettings("avatar"); return;
+    }
     setVoiceState("connecting");
     setVoiceFlags({});
     voiceTurn.current = 0;
-    const Client = window.douliNativeVoice ? NativeVoice : BrowserVoice;
+    const Client = withAvatar ? AvatarVoice : window.douliNativeVoice && !selectedPerson() ? NativeVoice : BrowserVoice;
     const client = new Client({
       onEvent: event,
       onStatus: (s) => {
@@ -585,6 +610,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
         if (s === "off") { setBusy(false); visual.current?.stop(); }
       },
       onLevel: setLevel,
+      video: avatarVideo.current, audio: avatarAudio.current, volume: avatarVolume, onAvatarStatus: setAvatarStatus,
     });
     voice.current = client;
     try {
@@ -605,6 +631,39 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
   const visibleSessions = sessions.filter(s => (sourceFilter === "all" || conversationSource(s.source).kind === sourceFilter) && inDateRange(s.updated_at, dateFilter));
   const summary = (state.memorySummaries || []).find(s => s.session_id === session?.id);
   const source = conversationSource(session?.source, state.devices);
+  if (view === "video") return <VideoCallPage
+    name={state.settings.assistant.name}
+    metrics={metrics}
+    faceName={state.settings.avatar?.faceName}
+    videoRef={avatarVideo}
+    audioRef={avatarAudio}
+    voiceState={voiceState}
+    avatarStatus={avatarStatus}
+    flags={voiceFlags}
+    level={level}
+    captions={captions}
+    caption={partial || spokenCaption}
+    captionSpeaker={partial ? "你" : state.settings.assistant.name}
+    volume={avatarVolume}
+    onStart={() => startVoice(true)}
+    onStop={stop}
+    onMute={() => voice.current?.control("mute", !voiceFlags.muted)}
+    onPause={() => voice.current?.control(voiceFlags.paused ? "resume" : "pause")}
+    onSubmit={() => voice.current?.submit()}
+    onInterrupt={() => voice.current?.interrupt()}
+    onCaptions={() => {
+      setCaptions(!captions);
+      try { localStorage.setItem("douli.captions", captions ? "off" : "on"); } catch {}
+    }}
+    onVolume={value => {
+      const volume = normalizeAvatarVolume(value);
+      setAvatarVolume(volume);
+      voice.current?.setVolume(volume);
+      try { localStorage.setItem("douli.avatarVolume", String(volume)); } catch {}
+    }}
+    onUnlock={() => voice.current?.avatar.unlockAudio().then(() => setAvatarStatus("ready")).catch(() => notify("请允许页面播放声音后重试", true))}
+    onSettings={() => openSettings("avatar")}
+  />;
   return (
     <div className={`chat-layout ${showHistory ? "show-history" : ""}`}>
       <aside className="history">
@@ -626,7 +685,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
         <div className="conversation-top">
           <button className="mobile-history" onClick={() => setShowHistory(!showHistory)} aria-label="打开聊天记录"><MessageCircle size={18} /></button>
           <div className="thread-heading"><h1>{session?.title || (composing ? "新的文字对话" : "回看那些聊过的日常")}</h1><small>{session ? <>{source.label} · {time(session.created_at)} · {messages.length} 条消息</> : "音箱上的对话，也会留在这里"}</small></div>
-          {session && <div className="row-actions"><a className="button" href={`/api/sessions/${session.id}/export`}><Download size={15} />导出</a><details className="action-menu"><summary aria-label="更多对话操作">•••</summary><div><Button danger icon={Trash2} onClick={() => {
+          {session && <div className="row-actions"><a className="button" href={personUrl(`/api/sessions/${session.id}/export`)}><Download size={15} />导出</a><details className="action-menu"><summary aria-label="更多对话操作">•••</summary><div><Button danger icon={Trash2} onClick={() => {
             if (confirm("删除这段对话？其中未固定的来源记忆和保存的录音也会删除。")) act(async () => { stop(); await api("/sessions/" + session.id, "DELETE"); fresh(); setComposing(false); loadSessions(); });
           }}>删除这段对话</Button></div></details></div>}
         </div>
@@ -668,7 +727,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
           )}
           {busy && !pending && (
             <div className="thinking">
-              {routeInfo ? `${names[routeInfo.route]} · ${routeInfo.tier === "strong" ? "质量优先" : "快速回答"}` : "正在理解你的问题"}<span>···</span>
+              正在回答<span>···</span>
             </div>
           )}
           <div ref={bottom} />
@@ -742,7 +801,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
               >
                 {voiceState === "off" ? "电脑语音" : "结束语音"}
               </Button>
-              <select aria-label="对话模式" value={route} disabled={voiceState !== "off" || busy} onChange={e => setRoute(e.target.value)}>{["auto", "daily", "learning", "reasoning", "health", "debate"].map(k => <option value={k} key={k}>{names[k]}</option>)}</select>
+              {voiceState === "off" && <Button icon={Video} onClick={() => setPage("video")}>视频通话</Button>}
               <Button disabled={busy || voiceState !== "off"} onClick={() => setComposing(false)}>收起输入</Button>
               <span className="small muted">
                 Enter 发送 · Shift + Enter 换行
@@ -786,7 +845,7 @@ function Chat({ state, act, notify, setPage, requestedSession, openExperiences }
           </div>}
         </div>
 
-        {!composing && <div className="archive-footer"><span><Radio size={14} />音箱对话会保存在这里</span><div className="row-actions"><Button icon={voiceState === "off" ? Mic : MicOff} onClick={startVoice}>{voiceState === "off" ? "电脑语音" : "结束语音"}</Button><Button icon={MessageCircle} onClick={beginText}>{session ? "继续文字对话" : "开始文字对话"}</Button></div></div>}
+        {!composing && <div className="archive-footer"><span><Radio size={14} />音箱对话会保存在这里</span><div className="row-actions">{voiceState === "off" && <Button icon={Video} onClick={() => setPage("video")}>视频通话</Button>}<Button icon={voiceState === "off" ? Mic : MicOff} onClick={startVoice}>{voiceState === "off" ? "电脑语音" : "结束语音"}</Button><Button icon={MessageCircle} onClick={beginText}>{session ? "继续文字对话" : "开始文字对话"}</Button></div></div>}
       </div>
     </div>
   );
@@ -862,7 +921,7 @@ function Message({ message: m, name, onCorrect }) {
             <audio
               controls
               preload="none"
-              src={"/api/messages/" + m.id + "/audio"}
+              src={personUrl("/api/messages/" + m.id + "/audio")}
             />
           ) : null}
         </div>
@@ -873,6 +932,7 @@ function Message({ message: m, name, onCorrect }) {
 
 function RoutingDetails({ routing: r }) {
   if (!r) return null;
+  if (r.source === "fixed") return <div className="small muted">{r.model || "对话模型未配置"} · 深度思考已关闭</div>;
   const classifier = { success: "已分类", skipped: "无需分类", timeout: "分类超时", invalid: "分类结果无效", error: "分类服务失败", unconfigured: "未配置分类模型" };
   return <details className="tool-results routing-details">
     <summary>{r.tier === "strong" ? "质量优先" : "快速回答"} · {r.model || "模型未配置"}{r.degraded ? " · 已回退" : ""}</summary>
@@ -918,7 +978,7 @@ function ToolResults({ items }) {
     </details>
   ) : null;
 }
-function SettingsPage({ state, act, notify, ui, updateUi }) {
+function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models" }) {
   const [s, setS] = useState(structuredClone(state.settings)),
     [kind, setKind] = useState("daily"),
     [testBusy, setTestBusy] = useState(false),
@@ -950,8 +1010,8 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
       const baseUrl = "https://api.siliconflow.cn/v1";
       next.models.daily = {
         ...next.models.daily,
-        baseUrl,
-        model: "Qwen/Qwen3.5-122B-A10B",
+        baseUrl: "https://api.deepseek.com",
+        model: "deepseek-flash",
         thinking: false,
       };
       next.models.asr = {
@@ -968,32 +1028,35 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
       };
       return next;
     });
-    notify("已填写起步配置，请填写 API Key 后保存");
+    notify("已填写起步配置，请分别填写 DeepSeek 和语音服务的 API Key 后保存");
   };
-  const [panel, setPanel] = useState("models");
+  const [panel, setPanel] = useState(initialPanel);
+  useEffect(() => { setPanel(initialPanel); }, [initialPanel]);
   const [desktopStatus, setDesktopStatus] = useState(null);
   useEffect(() => { window.douliDesktop?.getStatus().then(setDesktopStatus).catch(e => notify(e.message, true)); }, []);
-  const panels = [["models", "模型连接", Sparkles], ["voice", "声音与语音", Volume2], ["dictionary", "个人词典", BookOpen], ["privacy", "记录与隐私", ShieldCheck], ["sync", "同步与备份", Cloud], ["modules", "功能显示", SlidersHorizontal], ["desktop", "桌面偏好", Monitor], ["events", "运行记录", ListChecks]];
+  const panels = [["models", "模型连接", Sparkles], ["people", "家庭成员与声纹", Users], ["voice", "声音与语音", Volume2], ["avatar", "实时形象", Monitor], ["dictionary", "个人词典", BookOpen], ["privacy", "记录与隐私", ShieldCheck], ["sync", "同步与备份", Cloud], ["modules", "功能显示", SlidersHorizontal], ["desktop", "桌面偏好", Monitor], ["events", "运行记录", ListChecks]];
   return <>
     <div className="page-title title-with-action"><div><span className="eyebrow">MAKE YOURSELF AT HOME</span><h1>设置</h1><p>让声音、连接和习惯，都按你的方式运转。</p></div>{["models", "voice", "privacy"].includes(panel) && <Button primary icon={Check} onClick={save}>保存设置</Button>}</div>
     <div className="settings-layout"><nav className="settings-nav" aria-label="设置分类">{panels.map(([id, label, Icon]) => <button key={id} aria-current={panel === id ? "page" : undefined} onClick={() => setPanel(id)}><Icon size={16} />{label}</button>)}</nav>
       <div className="settings-content">
+      {panel === "people" && <PeoplePanel {...{ state, api, act, notify, Section, Button }} />}
+      {panel === "avatar" && <AvatarSettings settings={s.avatar} {...{ api, act, notify, Section, Field, Button }} onSaved={avatar => setS(old => ({ ...old, avatar }))} />}
       {panel === "models" && <>
-        <div className="model-status-grid">{[["daily", MessageCircle], ["asr", Mic], ["tts", Volume2]].map(([id, Icon]) => <button key={id} className={kind === id ? "active" : ""} onClick={() => setKind(id)}><Icon size={20} /><strong>{names[id]}</strong><span className={state.configured[id] ? "tag" : "tag amber"}>{state.configured[id] ? "已配置" : "待配置"}</span><small>{s.models[id].model || "选择一个适合你的模型"}</small></button>)}</div>
+        <div className="model-status-grid">{[["daily", MessageCircle], [s.input.asrProvider === "volcengine" ? "streamingAsr" : "asr", Mic], [s.input.ttsProvider === "volcengine" ? "streamingTts" : "tts", Volume2]].map(([id, Icon]) => <button key={id} className={kind === id ? "active" : ""} onClick={() => setKind(id)}><Icon size={20} /><strong>{id === "streamingAsr" ? "豆包 ASR 2.0" : names[id]}</strong><span className={state.configured[id] ? "tag" : "tag amber"}>{state.configured[id] ? "已配置" : "待配置"}</span><small>{s.models[id].model || "选择一个适合你的模型"}</small></button>)}</div>
         <div className="model-layout"><div>      <Section
         title="模型连接"
-        subtitle="可分别配置路由分类、强模型与各场景模型。分类调用会关闭思考；记忆提取可沿用日常模型。"
+        subtitle="所有聊天共用一个对话模型，不再分类切换模型；深度思考已关闭。"
       >
         <div className="model-tabs">
           {Object.entries(names)
-            .filter(([k]) => k !== "auto")
+            .filter(([k]) => Object.hasOwn(s.models, k))
             .map(([k, name]) => (
               <button
                 key={k}
                 className={kind === k ? "selected" : ""}
                 onClick={() => setKind(k)}
               >
-                {name}
+                {k === "daily" ? "对话模型" : name}
                 <span className={state.configured[k] ? "dot green" : "dot"} />
               </button>
             ))}
@@ -1009,7 +1072,7 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
               onChange={(e) => updateModel("baseUrl", e.target.value)}
             />
           </Field>
-          <Field label={kind === "streamingAsr" ? "资源 ID（如 volc.seedasr.sauc.duration）" : "模型名称"}>
+          <Field label={kind === "streamingAsr" ? "资源 ID（如 volc.seedasr.sauc.duration）" : kind === "streamingTts" ? "资源 ID（seed-tts-2.0）" : "模型名称"}>
             <input
               value={model.model}
               placeholder="完整模型 ID"
@@ -1033,7 +1096,10 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
             onChange={(e) => updateModel("apiKey", e.target.value)}
           />
         </Field>
-        {["tts", "realtime"].includes(kind) && (
+        {kind === "streamingTts" && <Button onClick={() => setS(old => ({ ...old, models: { ...old.models,
+          streamingTts: { ...old.models.streamingTts, baseUrl: "https://openspeech.bytedance.com/api/v3/tts/bidirection",
+            model: "seed-tts-2.0", voice: "zh_female_vv_uranus_bigtts", pcmSampleRate: 24000 } } }))}>填写豆包 2.0 配置</Button>}
+        {["tts", "streamingTts", "realtime"].includes(kind) && (
           <div className="grid two">
             <Field label="音色">
               <input
@@ -1054,19 +1120,11 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
             </Field>
           </div>
         )}
-        {!["asr", "tts", "embedding", "rerank", "streamingAsr", "realtime"].includes(kind) && (
-          <Toggle
-            label="深度思考"
-            hint="支持 DeepSeek 官方接口，以及硅基流动 Qwen3、DeepSeek V3/V4 的思考开关；分类和连接测试始终关闭思考。"
-            checked={model.thinking}
-            onChange={(v) => updateModel("thinking", v)}
-          />
-        )}
         <div className="row-actions">
           <Button primary icon={Check} onClick={save}>
             保存设置
           </Button>
-          {!["asr", "tts", "streamingAsr", "realtime"].includes(kind) && (
+          {!["asr", "tts", "streamingTts", "streamingAsr", "realtime"].includes(kind) && (
             <Button
               disabled={testBusy}
               onClick={() =>
@@ -1105,7 +1163,7 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
             清除密钥
           </Button>
         </div>
-        {kind === "tts" && (
+        {["tts", "streamingTts"].includes(kind) && (
           <div className="row-actions" style={{ marginTop: 16 }}>
             <Button
               icon={Volume2}
@@ -1117,6 +1175,7 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                       text: "你好，我是豆梨。我在，慢慢说。",
+                      kind,
                     }),
                   });
                   if (!r.ok) throw new Error((await r.json()).error);
@@ -1131,14 +1190,14 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
         )}
       </Section><details className="setup-details"><summary>服务商起步配置<ChevronDown size={15} /></summary>      <Section
         title="快速开始"
-        subtitle="硅基流动的三个接口可以使用同一个 API Key。这里只填写配置，不会自动购买或充值。"
+        subtitle="对话使用 DeepSeek Flash；语音识别与合成可使用硅基流动。两个服务商需要分别填写密钥。"
         action={
           <Button icon={Sparkles} onClick={preset}>
             填写起步配置
           </Button>
         }
       >
-        <Field label="共用 API Key（只应用到日常对话、识别和合成）">
+        <Field label="硅基流动 API Key（只应用到语音识别和合成）">
           <div className="inline-input">
             <input
               type="password"
@@ -1153,7 +1212,7 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
                 if (!key) return;
                 setS((old) => {
                   const next = structuredClone(old);
-                  for (const k of ["daily", "asr", "tts"])
+                  for (const k of ["asr", "tts"])
                     next.models[k].apiKey = key;
                   return next;
                 });
@@ -1172,16 +1231,7 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
         >
           去服务商创建 API Key ↗
         </a>
-      </Section></details></div><aside>      <Section title="智能模型路由" subtitle="结合问题和最近几轮对话判断场景、复杂度及个人决策；医学、学习和复杂问题优先使用强模型。">
-        <Toggle label="启用模型自动分类" checked={s.routing?.enabled ?? true} onChange={v => update("routing", "enabled", v)} hint="明确的问候、设备指令和简短追问会直接处理；其余问题增加一次分类调用。" />
-        <Toggle label="不确定时优先质量" checked={s.routing?.qualityFirst ?? true} onChange={v => update("routing", "qualityFirst", v)} hint="分类超时、失败或把握较低时优先强模型；会增加用量。" />
-        <div className="grid two">
-          <Field label="分类等待上限（秒）"><input type="number" min="0.5" max="15" step="0.5" value={(s.routing?.timeoutMs ?? 6000) / 1000} onChange={e => update("routing", "timeoutMs", Math.round(Number(e.target.value) * 1000))} /></Field>
-          <Field label="分类参考最近消息数"><input type="number" min="2" max="20" step="1" value={s.routing?.historyMessages ?? 8} onChange={e => update("routing", "historyMessages", Number(e.target.value))} /></Field>
-        </div>
-        <p>日常使用日常模型；其他场景优先使用其专用模型，留空时使用强模型。强模型也未配置时会显示回退提示。路由分类留空时沿用日常模型。</p>
-        <Button primary icon={Check} onClick={save}>保存路由设置</Button>
-      </Section><div className="profile-help"><LockKeyhole size={20} /><h3>连接由你掌握</h3><p>密钥保存在本机。使用云模型时，相应的对话内容会发送给你配置的服务商。</p></div></aside></div>
+      </Section></details></div><aside><div className="profile-help"><LockKeyhole size={20} /><h3>连接由你掌握</h3><p>密钥保存在本机。使用云模型时，相应的对话内容会发送给你配置的服务商。</p></div></aside></div>
       </>}
       {panel === "voice" && <>      <Section
         title="语音输入"
@@ -1201,9 +1251,13 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
           <Field label="插话方式"><select value={s.input.interruptionMode} onChange={e => update("input", "interruptionMode", e.target.value)}><option value="intent">短附和后继续回答</option><option value="immediate">检测到说话立即打断</option></select></Field>
         </div>
         <Field label="通话引擎" hint="全双工模式在模型页配置“火山全双工语音”：https://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue，模型 1.2.6.1。日常陪伴直接使用实时语音；复杂问题、记忆确认、设置与健康问答沿用现有流程和语音合成。更改后下次通话生效。"><select value={s.input.voiceMode} onChange={e => update("input", "voiceMode", e.target.value)}><option value="cascade">现有模型组合</option><option value="realtime">火山原生全双工</option></select></Field>
-        <Field label="语音识别服务" hint="火山模式在模型页配置“火山流式识别”，地址填写 https://openspeech.bytedance.com/api/v3/sauc/bigmodel，模型栏填写已开通的资源 ID。"><select value={s.input.asrProvider} onChange={e => update("input", "asrProvider", e.target.value)}><option value="compatible">兼容接口／流式桥接</option><option value="volcengine">火山原生双向流式识别</option></select></Field>
+        <Field label="语音识别服务" hint="豆包在说话时显示字幕，说完后结合热词和近期对话校正。连接信息在模型页的“火山流式识别”中配置。"><select value={s.input.asrProvider} onChange={e => update("input", "asrProvider", e.target.value)}><option value="compatible">兼容接口／流式桥接</option><option value="volcengine">豆包流式语音识别 2.0</option></select></Field>
+        <Field label="语音合成服务" hint="豆包双向流式会在回答生成时持续接收文字，复用连接。先在模型页配置并试听“豆包流式合成”；需要已开通对应合成资源。"><select value={s.input.ttsProvider || "compatible"} onChange={e => update("input", "ttsProvider", e.target.value)}><option value="compatible">现有语音合成接口</option><option value="volcengine">豆包双向流式合成 2.0</option></select></Field>
+        {s.input.asrProvider === "volcengine" && <Toggle label="说完后再次校正" checked={s.input.asrTwoPass} onChange={v => update("input", "asrTwoPass", v)} hint="结合热词和对话上下文生成最终转写，可能略微增加等待时间。" />}
+        <Toggle label="纠正助手称呼" checked={s.input.correctAssistantName} onChange={v => update("input", "correctAssistantName", v)} hint="只处理语音中的直接称呼，例如“再见，老李”改为“再见，豆梨”；保留原始转写供核对。" />
+        <Field label="助手称呼常见误识别" hint="用顿号或逗号分隔。正确的助手名字会自动作为热词发送。"><input defaultValue={(s.input.assistantAliases || []).join("、")} onBlur={e => update("input", "assistantAliases", e.target.value.split(/[、,，]/).map(v => v.trim()).filter(Boolean))} /></Field>
         <Toggle label="自然判停" checked={s.input.adaptiveEndpoint} onChange={v => update("input", "adaptiveEndpoint", v)} hint="遇到‘因为、然后、我想…’等未完表达，留更长时间继续说。" />
-        <Toggle label="语义辅助判停" checked={s.input.semanticEndpoint} onChange={v => update("input", "semanticEndpoint", v)} hint="配置路由模型后，使用短时分类判断是否说完；不可用时沿用停顿检测。" />
+        <Toggle label="语义辅助判停" checked={s.input.semanticEndpoint} onChange={v => update("input", "semanticEndpoint", v)} hint="额外调用对话模型判断是否说完；默认关闭。本地自然判停仍会保留‘因为、然后、我想…’后的等待。" />
         <div className="grid two">
           <Field label="犹豫时等待（毫秒）"><input type="number" min="850" max="5000" value={s.input.thinkingPauseMs} onChange={e => update("input", "thinkingPauseMs", +e.target.value)} /></Field>
           <Field label="转写预览间隔（毫秒）" hint="未接流式识别时，预览会额外调用识别接口；填 0 关闭。"><input type="number" min="0" max="5000" step="100" value={s.input.previewMs} onChange={e => update("input", "previewMs", +e.target.value)} /></Field>
@@ -1308,7 +1362,7 @@ function SettingsPage({ state, act, notify, ui, updateUi }) {
               <b>
                 {d.phrase} → {d.replacement}
               </b>
-              <small>{d.status === "active" ? "已启用" : "待确认建议"}</small>
+              <small>{d.status === "active" ? "已启用" : "待确认建议"} · {d.scope === "assistant_address" ? "仅语音直接称呼" : "所有输入"}</small>
             </div>
             <div className="row-actions">
               {d.status !== "active" && (

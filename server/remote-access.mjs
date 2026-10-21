@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { wav } from "./audio.mjs";
 
 export function validateRemoteAccess(value) {
   if (!value || value.enabled !== true) return null;
@@ -22,15 +23,21 @@ export function readRemoteAccess(directory) {
 }
 
 // This listener is exclusively for an HTTPS tunnel. It deliberately registers
-// only authenticated device discovery and the existing authenticated socket.
+// authenticated devices and a short-lived random capability for enrollment.
 // Local pairing, sync, management and personal records have no routes here.
 export async function createRemoteGateway(gateway, config) {
   if (!config) return null;
   const remote = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 10000 });
   remote.addHook("onRequest", async (request, reply) => {
     reply.header("Cache-Control", "no-store");
+    if (request.method === "GET" && gateway.people?.temporaryAudio(request.url)) return;
     if (!gateway.authorized(request))
       return reply.code(401).send({ error: "设备未授权" });
+  });
+  remote.get("/voiceprint-audio/:file", async (request, reply) => {
+    const pcm = gateway.people?.temporaryAudio(request.url);
+    if (!pcm) return reply.code(404).send({ error: "录音链接已失效" });
+    return reply.type("audio/wav").header("X-Content-Type-Options", "nosniff").send(wav(pcm));
   });
   for (const url of ["/xiaozhi/ota", "/xiaozhi/ota/"])
     remote.route({

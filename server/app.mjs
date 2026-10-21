@@ -18,7 +18,7 @@ import { putMemory, forgetMemory, evidenceFor } from "./memory.mjs";
 import { MemoryService } from "./memory-service.mjs";
 import { embeddingProfile, rerankProfile } from "./memory-search.mjs";
 import { recordCorrection } from "./input.mjs";
-import { complete, synthesize, embed, rerank } from "./providers.mjs";
+import { complete, synthesize, embed, rerank, speechProfile } from "./providers.mjs";
 import { wav } from "./audio.mjs";
 import { HealthService, registerHealthRoutes } from "./health-service.mjs";
 import { SyncService, registerSyncRoutes } from "./sync-service.mjs";
@@ -27,6 +27,8 @@ import { readRemoteAccess, validateRemoteAccess, createRemoteGateway } from "./r
 import { BackendSelectionService } from "./backend-selection.mjs";
 import { controlSpeaker } from "./speaker-control.mjs";
 import { ComputerTasks, registerComputerRoutes } from "./computer-tasks.mjs";
+import { People, registerPeopleRoutes } from "./people.mjs";
+import { registerAvatarRoutes } from "./avatar.mjs";
 
 const text = (value, max = 4000) => {
   if (typeof value !== "string" || !value.trim() || value.length > max)
@@ -41,26 +43,42 @@ export async function createApplication({
   logger = false,
   remoteAccess,
   computerOptions,
+  avatarOptions,
 } = {}) {
   const directory = dataDir || resolve(".data");
   const remoteConfig = remoteAccess === undefined
     ? readRemoteAccess(directory) : validateRemoteAccess(remoteAccess);
-  const store = new Store(directory);
+  let store = new Store(directory);
   const home = new HomeService(store);
-  const memory = new MemoryService(store);
-  const engine = new ChatEngine(store, home, memory);
+  let memory = new MemoryService(store);
+  let engine = new ChatEngine(store, home, memory);
   const computer = new ComputerTasks(store, computerOptions);
   engine.computer = computer;
-  const health = new HealthService(store);
+  let health = new HealthService(store);
   engine.health = health;
   const gateway = new Gateway(store, engine, { adminPort });
   const sync = new SyncService(store, { addresses: () => localAddresses(store.directory), port: gatewayPort,
     onChange: () => memory.schedule() });
   const backends = new BackendSelectionService(store, gateway, sync, { remoteConfig });
+  const people = new People({ store, memory, engine, health, home }, { remoteConfig });
+  gateway.people = people;
+  people.onCreated = () => {
+    // A pre-existing realtime socket may hold the original user's context.
+    for (const connection of gateway.connections.values()) connection.finishConversation();
+  };
+  store = people.proxy("store"); memory = people.proxy("memory");
+  engine = people.proxy("engine"); health = people.proxy("health");
   gateway.serviceHostname = () => sync.ready() ? sync.replica.config()?.hostname : null;
   home.deviceCall = (...args) => gateway.call(...args);
   const admin = Fastify({ logger, bodyLimit: 2 * 1024 * 1024 });
   const device = Fastify({ logger, bodyLimit: 1024 * 1024 });
+  admin.addHook("onRequest", (req, _reply, done) => {
+    if (!/^\/api\/(?:state|chat|sessions|messages|preferences|memories|memory|medical|dictionary)(?:[/?]|$)/.test(req.url)) return done();
+    try {
+      const id = req.headers["x-douli-person"] || new URL(req.url, "http://localhost").searchParams.get("person") || "";
+      people.scope.run(people.bundle(id), done);
+    } catch (error) { done(error); }
+  });
   if (process.env.DOULI_MOBILE === "1" && process.env.DOULI_STOP_TOKEN) {
     admin.post("/api/mobile/stop", async (req, reply) => {
       if (req.headers.authorization !== `Bearer ${process.env.DOULI_STOP_TOKEN}`)
@@ -91,6 +109,8 @@ export async function createApplication({
       reply.code(error.statusCode || 400).send({ error: error.message });
     });
   registerHealthRoutes(admin, health);
+  registerPeopleRoutes(admin, people);
+  registerAvatarRoutes(admin, store, avatarOptions);
   registerComputerRoutes(admin, computer);
   registerSyncRoutes(admin, device, sync);
   admin.get("/api/devices/:id/backend", async req => backends.status(req.params.id));
@@ -103,7 +123,7 @@ export async function createApplication({
       (count, server) => count + server.clients.size,
       0,
     ),
-    activeTurns: engine.active.size,
+    activeTurns: engine.active.size + [...people.bundles.values()].reduce((n, bundle) => n + bundle.engine.active.size, 0),
     memoryVersion: 2,
     healthVersion: 1,
     syncVersion: 1,
@@ -111,6 +131,7 @@ export async function createApplication({
     computerControlVersion: 1,
   }));
   admin.get("/api/state", async () => ({
+    people: people.state(),
     settings: store.publicSettings(),
     preferences: store.all("preferences"),
     memories: store
@@ -140,6 +161,9 @@ export async function createApplication({
   admin.put("/api/settings", async (req) => {
     const current = store.settings();
     const patch = structuredClone(req.body);
+    // Provider IDs are managed by enrollment, never by a stale settings form.
+    delete patch.people;
+    if (patch.avatar && !patch.avatar.apiKey && !patch.clearKeys?.includes("avatar")) delete patch.avatar.apiKey;
     for (const key of Object.keys(defaults.models))
       if (
         patch.models?.[key] &&
@@ -166,7 +190,7 @@ export async function createApplication({
   });
   admin.post("/api/models/test", async (req) => {
     const kind = req.body.kind;
-    if (!(kind in defaults.models) || ["asr", "tts", "streamingAsr", "realtime"].includes(kind))
+    if (!(kind in defaults.models) || ["asr", "tts", "streamingTts", "streamingAsr", "realtime"].includes(kind))
       throw new Error("请通过麦克风试聊测试语音模型");
     const started = Date.now();
     if (kind === "rerank") {
@@ -193,8 +217,9 @@ export async function createApplication({
   });
   admin.post("/api/models/voice-preview", async (req, reply) => {
     const settings = store.settings();
+    if (req.body?.kind && !["tts", "streamingTts"].includes(req.body.kind)) throw new Error("未知的语音合成配置");
     const audio = await synthesize(
-      settings.models.tts,
+      req.body?.kind ? settings.models[req.body.kind] : speechProfile(settings),
       text(req.body?.text || settings.assistant.greeting, 300),
       AbortSignal.timeout(30000),
     );
@@ -341,9 +366,11 @@ export async function createApplication({
   });
   admin.put("/api/dictionary", async (req) => {
     const id = req.body.id || randomUUID();
+    const scope = req.body.scope || (req.body.replacement === store.settings().assistant.name ? "assistant_address" : "global");
+    if (!["global", "assistant_address"].includes(scope)) throw new Error("未知的词典适用范围");
     store.db
       .prepare(
-        "INSERT INTO dictionary VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET phrase=excluded.phrase,replacement=excluded.replacement,status=excluded.status",
+        "INSERT INTO dictionary (id,phrase,replacement,status,created_at,scope) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET phrase=excluded.phrase,replacement=excluded.replacement,status=excluded.status,scope=excluded.scope",
       )
       .run(
         id,
@@ -351,6 +378,7 @@ export async function createApplication({
         text(req.body.replacement, 100),
         req.body.status === "suggested" ? "suggested" : "active",
         new Date().toISOString(),
+        scope,
       );
     return { id };
   });
@@ -531,6 +559,7 @@ export async function createApplication({
     sync,
     backends,
     computer,
+    people,
     close: async () => {
       clearInterval(timer);
       await computer.close();
@@ -541,6 +570,7 @@ export async function createApplication({
       await admin.close();
       await device.close();
       if (remote) await remote.close();
+      await people.close();
       store.close();
     },
   };

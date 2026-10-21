@@ -2,8 +2,6 @@ export const routes = ["daily", "learning", "reasoning", "health", "debate"];
 export const routeNames = {
   daily: "日常陪伴",
   learning: "知识学习",
-  router: "路由分类",
-  strong: "强模型",
   reasoning: "思考与解题",
   health: "健康问答",
   debate: "讨论与辨析",
@@ -15,6 +13,7 @@ export const routeNames = {
   rerank: "记忆重排",
   vision: "画面理解",
   streamingAsr: "火山流式识别",
+  streamingTts: "豆包流式合成",
   realtime: "火山全双工语音",
 };
 export function deviceConfig(patch = {}, current = {}) {
@@ -52,9 +51,13 @@ export const defaults = {
   input: {
     mode: "conversation",
     asrProvider: "compatible",
+    ttsProvider: "compatible",
     voiceMode: "cascade",
     refine: false,
-    silenceMs: 850,
+    correctAssistantName: true,
+    assistantAliases: ["豆离", "豆里", "豆黎", "豆粒", "逗梨", "老李"],
+    asrTwoPass: true,
+    silenceMs: 500,
     minSpeechMs: 120,
     rmsThreshold: 0.012,
     maxRecordingSeconds: 90,
@@ -64,14 +67,15 @@ export const defaults = {
     finalTimeoutMs: 4500,
     vad: "webrtc",
     adaptiveEndpoint: true,
-    semanticEndpoint: true,
+    semanticEndpoint: false,
     thinkingPauseMs: 2200,
     fastEndpointMs: 500,
     previewMs: 1200,
     interruptionMode: "intent",
   },
   privacy: { saveAudio: false, autoMemory: true },
-  routing: { enabled: true, qualityFirst: true, timeoutMs: 6000, historyMessages: 8, confidenceThreshold: 0.7 },
+  people: { voiceIdentification: false, groupId: "", members: [] },
+  avatar: { apiKey: "", faceId: "66d1f5af-9b9b-49e2-a97f-6f5f3d59a2d5", faceName: "Tina（示例形象）", connectionMode: "sfu" },
   memory: {
     semantic: true,
     autoSummaries: true,
@@ -84,7 +88,7 @@ export const defaults = {
     backgroundIntervalMs: 60000,
   },
   models: Object.fromEntries(
-    [...routes, "router", "strong", "asr", "tts", "refine", "memory", "embedding", "rerank", "vision", "streamingAsr", "realtime"].map((key) => [
+    ["daily", "asr", "tts", "refine", "memory", "embedding", "rerank", "vision", "streamingAsr", "streamingTts", "realtime"].map((key) => [
       key,
       {
         baseUrl: "",
@@ -114,19 +118,33 @@ export function mergeSettings(current, patch) {
   }
   return result;
 }
+export function normalizeSettings(value) {
+  // Loading old backups/settings cannot restore retired routing profiles or thinking.
+  const settings = mergeSettings(defaults, value);
+  for (const model of Object.values(settings.models)) model.thinking = false;
+  return settings;
+}
 export function validateSettings(s) {
+  if (!s.avatar || !["apiKey", "faceId", "faceName"].every(k => typeof s.avatar[k] === "string") ||
+      s.avatar.apiKey.length > 512 || s.avatar.faceName.length > 80 || !["sfu", "direct"].includes(s.avatar.connectionMode) ||
+      (s.avatar.faceId && !/^[a-zA-Z0-9_-]{1,100}$/.test(s.avatar.faceId)))
+    throw new Error("无效的实时形象设置");
+  if (!s.people || typeof s.people.voiceIdentification !== "boolean" || typeof s.people.groupId !== "string" ||
+      !Array.isArray(s.people.members) || s.people.members.length > 10 ||
+      s.people.members.some(p => !p || ![p.personId, p.voiceId, p.voiceName].every(v => typeof v === "string" && v.length > 0 && v.length < 150)))
+    throw new Error("无效的声纹设置");
+  if (typeof s.input?.correctAssistantName !== "boolean" || typeof s.input?.asrTwoPass !== "boolean" ||
+      !Array.isArray(s.input?.assistantAliases) || s.input.assistantAliases.length > 30 ||
+      s.input.assistantAliases.some(word => typeof word !== "string" || !word.trim() || word.length > 30))
+    throw new Error("无效的助手称呼纠错设置");
   if (!["cascade", "realtime"].includes(s.input?.voiceMode)) throw new Error("未知的实时语音模式");
   if (!["compatible", "volcengine"].includes(s.input?.asrProvider)) throw new Error("未知的语音识别服务");
-  for (const key of ["assistant", "input", "privacy", "models", "search", "memory", "routing"])
+  if (!["compatible", "volcengine"].includes(s.input?.ttsProvider)) throw new Error("未知的语音合成服务");
+  for (const key of ["assistant", "input", "privacy", "models", "search", "memory"])
     if (!s[key] || typeof s[key] !== "object" || Array.isArray(s[key]))
       throw new Error("无效的设置分组");
   if (!s.assistant.night || !Array.isArray(s.assistant.wakeWords))
     throw new Error("无效的助手设置");
-  if (typeof s.routing.enabled !== "boolean" || typeof s.routing.qualityFirst !== "boolean" ||
-      !Number.isInteger(s.routing.timeoutMs) || s.routing.timeoutMs < 500 || s.routing.timeoutMs > 15000 ||
-      !Number.isInteger(s.routing.historyMessages) || s.routing.historyMessages < 2 || s.routing.historyMessages > 20 ||
-      !Number.isFinite(s.routing.confidenceThreshold) || s.routing.confidenceThreshold < 0.5 || s.routing.confidenceThreshold > 1)
-    throw new Error("无效的模型路由设置");
   for (const key of Object.keys(defaults.models)) {
     const m = s.models[key];
     if (

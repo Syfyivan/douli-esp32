@@ -7,10 +7,24 @@ import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { createApplication } from "../server/app.mjs";
 import { mergeSettings } from "../server/config.mjs";
+import { defaults } from "../server/config.mjs";
+import { buildSystemPrompt } from "../server/prompts.mjs";
 
 const runtime = messages => JSON.parse(messages[0].content.split("\n").find(line => line.startsWith('{"assistantName":')));
 
-test("answer requests describe the selected, overridden or fallback model without exposing provider credentials", async t => {
+test("changing time and recalled facts leaves all fixed instructions in a reusable prefix", () => {
+  const options = { settings: defaults, outputMode: "voice", model: "deepseek-flash", now: new Date("2026-10-21T02:00:00Z") };
+  const before = buildSystemPrompt({ ...options, memoryContext: { facts: [{ value: "old fact" }] } });
+  const after = buildSystemPrompt({ ...options, now: new Date("2026-10-21T02:00:07Z"), memoryContext: { facts: [{ value: "corrected fact" }] } });
+  const cut = before.indexOf("## 相关记忆\n");
+  assert.ok(cut > 1000);
+  assert.equal(before.slice(0, cut), after.slice(0, cut));
+  assert.ok(after.includes("corrected fact") && !after.includes("old fact"));
+  assert.ok(after.includes("2026-10-21T02:00:07.000Z"));
+  assert.ok(before.indexOf("## 结束本次语音聊天") < cut);
+});
+
+test("all chat topics describe the shared model without exposing provider credentials", async t => {
   const received = [];
   const mock = createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -36,8 +50,8 @@ test("answer requests describe the selected, overridden or fallback model withou
   app.store.saveSettings(settings);
   const cases = [
     { text: "你是什么模型？", route: "auto", expected: "fast-alias" },
-    { text: "介绍一下你自己", route: "learning", expected: "strong-alias" },
-    { text: "介绍一下你自己", route: "learning", expected: "specialist-alias", patch: { models: { learning: profile("specialist-alias") } } },
+    { text: "介绍一下你自己", route: "learning", expected: "fast-alias" },
+    { text: "介绍一下你自己", route: "learning", expected: "fast-alias", patch: { models: { learning: profile("specialist-alias") } } },
     { text: "介绍一下你自己", route: "learning", expected: "fast-alias", patch: { models: { learning: { model: "", baseUrl: "" }, strong: { model: "", baseUrl: "" } } } },
   ];
   for (const item of cases) {
@@ -60,10 +74,10 @@ test("answer requests describe the selected, overridden or fallback model withou
     assert.ok(!JSON.stringify(request.messages).includes("private-provider"));
     assert.equal(done.message.metadata.routing.model, "provider-reported-version", "response metadata still records what the provider reports, separately from its request alias");
   }
-  assert.equal((await app.engine.run({ text: "你是什么模型？" })).message.metadata.routing.classifierStatus, "skipped");
+  assert.equal((await app.engine.run({ text: "你是什么模型？" })).message.metadata.routing.classifierStatus, "disabled");
 
   // Native audio may be offered, but the prompt must describe the path actually
-  // selected after routing, including falling back to a normal scene model.
+  // selected for this turn, including the shared chat model for text-only workflows.
   app.store.saveSettings(settings);
   let nativeMessages, nativeCalls = 0, cancellations = 0;
   const realtime = {
@@ -78,7 +92,7 @@ test("answer requests describe the selected, overridden or fallback model withou
   await app.engine.run({ text: "介绍一下你自己", route: "learning", outputMode: "voice", realtime });
   assert.equal(nativeCalls, 1);
   assert.ok(cancellations > 0);
-  assert.equal(runtime(received.at(-1).messages).requestedModel, "strong-alias");
+  assert.equal(runtime(received.at(-1).messages).requestedModel, "fast-alias");
   assert.equal(runtime(received.at(-1).messages).modelKind, "语言模型");
   assert.equal(runtime(received.at(-1).messages).interaction, "语音");
 });
