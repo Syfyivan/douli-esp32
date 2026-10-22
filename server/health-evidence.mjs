@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { XMLParser } from "fast-xml-parser";
 import { string, date } from "./health-store.mjs";
+import { searchWeb, searchStatus, resolveSearchConfig } from "./web-search.mjs";
 
 const xml = new XMLParser({ ignoreAttributes: false, processEntities: false, parseTagValue: false });
 const array = value => value == null ? [] : Array.isArray(value) ? value : [value];
@@ -109,16 +110,24 @@ export class HealthEvidence {
     }).filter(r => r.text && /^https:\/\/medlineplus.gov\//.test(r.url));
   }
   async trustedWeb(query, signal) {
-    const key = this.vault.store.settings().search.apiKey;
-    if (!key) throw new Error("中文权威网站检索尚未配置 Brave 搜索密钥");
-    const endpoint = new URL("https://api.search.brave.com/res/v1/web/search");
-    endpoint.search = new URLSearchParams({ q: query + " (" + medicalDomains.map(d => "site:" + d).join(" OR ") + ")", count: "8" });
-    const data = await request(endpoint, signal, this.fetch, "json", { "X-Subscription-Token": key });
-    return (data.web?.results || []).filter(row => {
+    const config = resolveSearchConfig(this.vault.store.settings());
+    const deepseek = searchStatus(config).provider === "deepseek";
+    // DeepSeek limits queries to 128 Unicode characters. Split domain clauses
+    // without dropping the trusted-domain restriction or truncating operators.
+    const groups = deepseek ? Array.from({ length: Math.ceil(medicalDomains.length / 2) }, (_, i) => medicalDomains.slice(i * 2, i * 2 + 2)) : [medicalDomains];
+    const rows = (await Promise.all(groups.map(domains => {
+      const suffix = " " + domains.map(d => "site:" + d).join(" OR ");
+      const terms = [...query].slice(0, deepseek ? 128 - suffix.length : 300).join("");
+      return searchWeb(config, terms + suffix, signal, { fetchImpl: this.fetch, limit: 8 });
+    }))).flat();
+    const seen = new Set();
+    return rows.filter(row => {
+      if (seen.has(row.url)) return false;
+      seen.add(row.url);
       try { const host = new URL(row.url).hostname; return medicalDomains.some(d => host === d || host.endsWith("." + d)); }
       catch { return false; }
-    }).map(row => ({ id: "web-" + idFor(row.url), title: row.title, url: row.url,
-      organization: new URL(row.url).hostname, text: strip(row.description), published: "未核实",
+    }).slice(0, 8).map(row => ({ id: "web-" + idFor(row.url), title: row.title, url: row.url,
+      organization: new URL(row.url).hostname, text: row.snippet, published: "未核实",
       category: /nmpa/.test(row.url) ? "label" : "reference", region: /\.cn\//.test(row.url) ? "中国" : "见原文",
       coverage: "search_snippet", status: "active", retrievedAt: new Date().toISOString(),
       limitation: "搜索摘要，未核对全文，不能作为具体剂量或禁忌结论的唯一依据。" }));

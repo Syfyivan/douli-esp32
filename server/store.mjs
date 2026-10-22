@@ -82,6 +82,8 @@ export class Store {
       m.hasKey = !!m.apiKey;
       m.apiKey = "";
     }
+    s.search.hasDeepseekKey = !!s.search.deepseekApiKey;
+    s.search.deepseekApiKey = "";
     s.search.hasKey = !!s.search.apiKey;
     s.search.apiKey = "";
     s.avatar.hasKey = !!s.avatar.apiKey;

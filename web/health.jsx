@@ -209,7 +209,7 @@ export function HealthPage({ api, Section, Field, Button, notify }) {
     </>}
     {tab === "sources" && <>
       <Section title="资料来源与更新" subtitle="优先选择适用于中国和你的实际药品的资料，每份保留发布机构、版本、日期和适用人群。">
-        <p>MedlinePlus.gov：健康主题解释；PubMed：论文摘要检索；DailyMed：美国药品说明书。中文权威网站：{state.searchConfigured ? "已配置" : "需在设置中填写 Brave 搜索密钥"}。</p><p className="small muted">联网结果缓存24小时；引用会显示检索时间与覆盖范围。主题摘要、研究摘要、搜索摘要和说明书节选会分别标明。</p>
+        <p>MedlinePlus.gov：健康主题解释；PubMed：论文摘要检索；DailyMed：美国药品说明书。中文权威网站：{state.searchConfigured ? "搜索服务可用" : "需在设置中开启并配置联网搜索"}。</p><p className="small muted">联网结果缓存24小时；引用会显示检索时间与覆盖范围。主题摘要、研究摘要、搜索摘要和说明书节选会分别标明。</p>
         <div className="health-source-links"><a href="https://www.msdmanuals.cn/home" target="_blank" rel="noreferrer">默沙东大众版 ↗</a><a href="https://www.nmpa.gov.cn/directory/web/nmpa/xxgk/ggtg/index.html" target="_blank" rel="noreferrer">药监局说明书修订公告 ↗</a><a href="https://www.nice.org.uk/guidance" target="_blank" rel="noreferrer">NICE 指南 ↗</a></div>
         {state.references.map(r => <div className="health-list-row" key={r.id}><button onClick={() => setReference(r)}>{r.title}<small>{categories[r.category]} · {r.region} · {r.version} · {r.status === "retired" ? "已停用" : r.reviewAfter < new Date().toISOString().slice(0, 10) ? "需要复核" : "使用中"}</small></button><Button icon={Trash2} aria-label={`删除${r.title}`} disabled={!!busy} onClick={() => remove(r)} /></div>)}
         <Button icon={Plus} onClick={() => setReference({ title: "", organization: "", url: "", published: "", reviewAfter: "", region: "中国", category: "guideline", version: "", population: "", text: "", license: "", status: "active" })}>导入有权使用的资料</Button>

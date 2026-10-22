@@ -1,6 +1,7 @@
 import { complete } from "./providers.mjs";
 import { HealthStore, string, reportData, factData } from "./health-store.mjs";
 import { HealthEvidence, referenceData } from "./health-evidence.mjs";
+import { searchStatus, resolveSearchConfig } from "./web-search.mjs";
 
 export function parseJson(raw) {
   const value = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""));
@@ -91,7 +92,7 @@ export class HealthService {
     return { facts: this.vault.list("fact"), reports: this.vault.list("report"), trends: this.vault.trends(),
       references: this.vault.list("reference"), consultations: this.vault.list("consultation").slice(0, 30),
       config: { revision: config?.revision, vision: { baseUrl: config?.vision?.baseUrl || "", model: config?.vision?.model || "", hasKey: !!config?.vision?.apiKey } },
-      model: this.profile()?.model || "", visionModel: this.profile(true)?.model || "", searchConfigured: !!this.vault.store.settings().search.apiKey };
+      model: this.profile()?.model || "", visionModel: this.profile(true)?.model || "", searchConfigured: searchStatus(resolveSearchConfig(this.vault.store.settings())).available };
   }
   async plan(question, context, signal) {
     const raw = await this.model(this.profile(), [

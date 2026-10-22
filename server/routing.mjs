@@ -1,4 +1,5 @@
 import { routes } from "./config.mjs";
+import { needsWebSearch, forbidsWebSearch } from "./web-search.mjs";
 
 const health = /医学|医疗|健康|症状|看病|生病|用药|药物|药量|处方|停药|吃药|疼痛|头痛|胸痛|腹痛|牙痛|发烧|发热|诊断|失眠|血压|过敏|怀孕|孕期|哺乳|检查报告|化验|副作用|medicine|medical|symptom|dosage/i;
 const learning = /学习|学会|教我|科普|讲解|讲讲|原理|课程|知识|入门|learn|teach|explain/i;
@@ -38,7 +39,7 @@ export async function routeRequest({ text, requested = "auto", history = [], set
       tier: "fast", thinking: false, source: "fixed", reason: "统一使用对话模型",
       classifierStatus: "disabled", classifierModel: null, routingMs: 0,
       continuation: continued, personalDecision,
-      needsSearch: route === "health" && personalDecision,
+      needsSearch: !forbidsWebSearch(text) && ((route === "health" && personalDecision) || needsWebSearch(text)),
       degraded: false, degradation: null,
     },
   };

@@ -19,12 +19,12 @@
 | [MedlinePlus.gov Web Service](https://medlineplus.gov/about/developers/webservices/) | 英文健康主题摘要 | 一般健康解释；接口不提供的发布日期不猜测 |
 | [PubMed / NCBI](https://www.ncbi.nlm.nih.gov/home/develop/api/) | 相关论文摘要、期刊及日期 | 摘要不是全文；单项研究不等于临床建议，剔除标为撤稿的条目 |
 | [DailyMed](https://dailymed.nlm.nih.gov/dailymed/app-support-web-services.cfm) | 美国具体制剂说明书的相关章节 | 通用名检索得到候选，必须核对厂家、剂型、规格、成分及适用地区 |
-| 中文权威网站 | 限定卫健委、药监局、默沙东等域名的 Brave 搜索摘要 | 需要用户自己的 Brave Key；明确标示未核对全文 |
+| 中文权威网站 | 限定卫健委、药监局、默沙东等域名的搜索摘要 | 复用全局 DeepSeek/Brave/必应搜索配置；明确标示未核对全文 |
 | 用户导入资料 | 有权保存使用的原文 | 必填来源、机构、地区、版本、发布日期、复核日期和授权依据；可停用旧版 |
 
 联网结果缓存 24 小时，页面显示来源覆盖范围、检索时间、地区和失败状态。导入资料的停用和复核状态不会被旧缓存覆盖。模型引用必须匹配本次实际检索到的原文短句；未匹配的引用会被剔除并提示。匹配原文不代表结论或人群适用性已经获得临床认证。
 
-当前可直接使用免费的 MedlinePlus、PubMed、DailyMed 接口。尚无 Brave Key 时中文在线检索显示“未配置”，不会伪装为已经查询；仍可导入有权使用的国内资料。这里集成的是资料接口和工作流程，不依赖把研究类 Agent skill 当作诊断工具。
+当前可直接使用免费的 MedlinePlus、PubMed、DailyMed 接口。中文在线检索复用[联网搜索配置](WEB_SEARCH.md)，关闭或服务不可用时会显示真实状态；仍可导入有权使用的国内资料。这里集成的是资料接口和工作流程，不依赖把研究类 Agent skill 当作诊断工具。
 
 ## 保存、模型与隐私
 
