@@ -29,6 +29,7 @@ import { controlSpeaker } from "./speaker-control.mjs";
 import { ComputerTasks, registerComputerRoutes } from "./computer-tasks.mjs";
 import { People, registerPeopleRoutes } from "./people.mjs";
 import { registerAvatarRoutes } from "./avatar.mjs";
+import { searchWeb, searchStatus, resolveSearchConfig } from "./web-search.mjs";
 
 const text = (value, max = 4000) => {
   if (typeof value !== "string" || !value.trim() || value.length > max)
@@ -177,6 +178,8 @@ export async function createApplication({
       !patch.clearKeys?.includes("search")
     )
       delete patch.search.apiKey;
+    if (patch.search && !patch.search.deepseekApiKey && !patch.clearKeys?.includes("searchDeepseek"))
+      delete patch.search.deepseekApiKey;
     if (
       patch.input &&
       !patch.input.streamingToken &&
@@ -187,6 +190,16 @@ export async function createApplication({
     void gateway.warmGreeting();
     memory.schedule();
     return store.publicSettings();
+  });
+  admin.post("/api/search/test", async (req) => {
+    const patch = structuredClone(req.body?.search || {});
+    if (!patch.apiKey) delete patch.apiKey;
+    if (!patch.deepseekApiKey) delete patch.deepseekApiKey;
+    const settings = validateSettings(mergeSettings(store.settings(), { search: patch }));
+    const started = Date.now();
+    const config = resolveSearchConfig(settings);
+    const results = await searchWeb(config, "ESP32 Espressif 官方文档", AbortSignal.timeout(12000));
+    return { ...searchStatus(config), results, latencyMs: Date.now() - started };
   });
   admin.post("/api/models/test", async (req) => {
     const kind = req.body.kind;

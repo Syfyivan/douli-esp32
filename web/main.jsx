@@ -334,6 +334,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     [route] = useState("auto"),
     [showHistory, setShowHistory] = useState(false);
   const [pending, setPending] = useState(""),
+    [searchProgress, setSearchProgress] = useState(""),
     [routeInfo, setRouteInfo] = useState(null),
     [busy, setBusy] = useState(false),
     [voiceState, setVoiceState] = useState("off"),
@@ -412,6 +413,9 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
   const append = (message) =>
     setMessages((old) => [...old.filter((m) => m.id !== message.id), message]);
   const event = (e) => {
+    if (e.type === "search_status") setSearchProgress(e.message);
+    if (e.type === "tool" && e.name === "web_search") setSearchProgress("");
+    if (["user", "done", "aborted", "error"].includes(e.type)) setSearchProgress("");
     if (e.type === "voice_mode") setVoiceModeLabel(e.reason);
     if (e.type === "native_screen") { setVisualSource(old => e.active ? "screen" : old === "screen" ? "" : old); setVisionStatus(old => e.active ? "正在共享手机屏幕，每轮提问发送一帧给画面理解模型" : old.startsWith("正在共享手机屏幕") ? "" : old); }
     if (e.type === "vision_request") visual.current?.respond(e);
@@ -727,7 +731,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
           )}
           {busy && !pending && (
             <div className="thinking">
-              正在回答<span>···</span>
+              {searchProgress || "正在回答"}<span>···</span>
             </div>
           )}
           <div ref={bottom} />
@@ -932,7 +936,12 @@ function Message({ message: m, name, onCorrect }) {
 
 function RoutingDetails({ routing: r }) {
   if (!r) return null;
-  if (r.source === "fixed") return <div className="small muted">{r.model || "对话模型未配置"} · 深度思考已关闭</div>;
+  if (r.source === "fixed") return <div className="small muted">{r.model || "对话模型未配置"} · 深度思考已关闭
+    {r.searchStatus === "retrieved" && " · 已联网检索"}
+    {r.searchStatus === "failed" && " · 联网检索未获得可用结果"}
+    {r.searchStatus === "disabled" && " · 联网搜索已关闭"}
+    {r.searchStatus === "unconfigured" && " · 搜索服务尚未配置"}
+  </div>;
   const classifier = { success: "已分类", skipped: "无需分类", timeout: "分类超时", invalid: "分类结果无效", error: "分类服务失败", unconfigured: "未配置分类模型" };
   return <details className="tool-results routing-details">
     <summary>{r.tier === "strong" ? "质量优先" : "快速回答"} · {r.model || "模型未配置"}{r.degraded ? " · 已回退" : ""}</summary>
@@ -958,8 +967,10 @@ function ToolResults({ items }) {
                   ? "设备实际状态已核实"
                   : "指令已被接收；实际状态未核实"}
             </p>
-          ) : tool.name === "web_search" && Array.isArray(tool.result) ? (
-            tool.result.map((r, j) => (
+          ) : tool.name === "web_search" ? (
+            !Array.isArray(tool.result) ? <p role="status">联网搜索失败：{tool.result.error}</p>
+            : !tool.result.length ? <p>没有找到可用的网络来源。</p>
+            : tool.result.map((r, j) => (
               <p key={j}>
                 <a
                   href={/^https?:\/\//.test(r.url) ? r.url : undefined}
@@ -968,6 +979,7 @@ function ToolResults({ items }) {
                 >
                   {r.title}
                 </a>
+                {r.snippet && <small className="muted">{r.snippet}</small>}
               </p>
             ))
           ) : (
@@ -982,6 +994,8 @@ function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models
   const [s, setS] = useState(structuredClone(state.settings)),
     [kind, setKind] = useState("daily"),
     [testBusy, setTestBusy] = useState(false),
+    [searchBusy, setSearchBusy] = useState(false),
+    [searchTest, setSearchTest] = useState(null),
     [events, setEvents] = useState([]),
     [preview, setPreview] = useState("");
   useEffect(
@@ -1408,21 +1422,40 @@ function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models
           checked={s.privacy.autoMemory}
           onChange={(v) => update("privacy", "autoMemory", v)}
         />
-        <Field
-          label="Brave Search API Key（可选）"
-          hint="未配置时助手没有联网检索能力。"
-        >
+      </Section><Section title="联网搜索" subtitle="豆梨按问题决定是否搜索：闲聊通常直接回答，需要最新资料或外部证据时再联网。搜索词会发送给所选服务。">
+        <Toggle label="启用联网搜索" checked={s.search.enabled} onChange={v => { update("search", "enabled", v); setSearchTest(null); }} />
+        <Field label="搜索服务" hint="自动模式依次选择有密钥的 DeepSeek、Brave，最后使用无需密钥的必应。DeepSeek 可复用已保存的官方对话模型密钥；必应公共搜索可能限流。">
+          <select value={s.search.provider} onChange={e => { update("search", "provider", e.target.value); setSearchTest(null); }}>
+            <option value="auto">自动选择（优先 DeepSeek）</option><option value="deepseek">DeepSeek Search</option><option value="bing">必应（无需密钥）</option><option value="brave">Brave Search</option>
+          </select>
+        </Field>
+        <Field label="DeepSeek Search API Key（可选）" hint="未单独配置时，复用已保存的 DeepSeek 官方对话模型密钥。搜索按服务商规则计费；留空保留已有搜索密钥。">
+          <input type="password" value={s.search.deepseekApiKey}
+            placeholder={s.search.hasDeepseekKey ? "已配置 · 留空保留" : "可复用 DeepSeek 官方对话密钥"}
+            onChange={e => { update("search", "deepseekApiKey", e.target.value); setSearchTest(null); }} />
+        </Field>
+        <Field label="Brave Search API Key（可选）" hint="只在使用 Brave 时需要；留空保留已有密钥。">
           <input
             type="password"
             value={s.search.apiKey}
             placeholder={
               s.search.hasKey ? "已配置 · 留空保留" : "用于有来源的联网回答"
             }
-            onChange={(e) => update("search", "apiKey", e.target.value)}
+            onChange={(e) => { update("search", "apiKey", e.target.value); setSearchTest(null); }}
           />
         </Field>
+        <Button disabled={searchBusy || !s.search.enabled} onClick={async () => {
+          setSearchBusy(true); setSearchTest(null);
+          try {
+            const result = await api("/search/test", "POST", { search: s.search });
+            setSearchTest(result);
+            notify(result.results.length ? `搜索成功，返回 ${result.results.length} 条来源` : "已连接，但没有找到结果", !result.results.length);
+          } catch (error) { notify(error.message, true); }
+          finally { setSearchBusy(false); }
+        }}>{searchBusy ? "正在搜索…" : "测试联网搜索"}</Button>
+        {searchTest && <><p className="small muted">{{ deepseek: "DeepSeek", bing: "必应", brave: "Brave" }[searchTest.provider]} · {(searchTest.latencyMs / 1000).toFixed(1)} 秒 · 当前表单测试成功后仍需保存设置</p><ToolResults items={[{ name: "web_search", result: searchTest.results }]} /></>}
         <Button primary onClick={save}>
-          保存
+          保存搜索设置
         </Button>
       </Section></>}
       {panel === "sync" && <SyncPanel {...{ api, Section, Field, Button, notify }} />}

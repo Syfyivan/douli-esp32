@@ -88,7 +88,7 @@ export async function rerank(profile, query, documents, signal) {
     throw new Error("重排服务返回无效数据");
   return data.results;
 }
-export async function* streamChat(profile, messages, signal, tools = []) {
+export async function* streamChat(profile, messages, signal, tools = [], toolChoice) {
   const r = await fetch(endpoint(profile, "/chat/completions"), {
     method: "POST",
     headers: { ...headers(profile), "Content-Type": "application/json" },
@@ -100,6 +100,7 @@ export async function* streamChat(profile, messages, signal, tools = []) {
       max_tokens: 1800,
       ...providerOptions(profile),
       ...(tools.length ? { tools } : {}),
+      ...(tools.length && toolChoice ? { tool_choice: toolChoice } : {}),
     }),
     signal: combined(signal, 120000),
   });

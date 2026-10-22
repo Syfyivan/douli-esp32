@@ -100,7 +100,7 @@ export const defaults = {
       },
     ]),
   ),
-  search: { apiKey: "" },
+  search: { enabled: true, provider: "auto", apiKey: "", deepseekApiKey: "" },
 };
 export function mergeSettings(current, patch) {
   if (!patch || typeof patch !== "object" || Array.isArray(patch))
@@ -125,6 +125,9 @@ export function normalizeSettings(value) {
   return settings;
 }
 export function validateSettings(s) {
+  if (!s.search || typeof s.search.enabled !== "boolean" || !["auto", "deepseek", "bing", "brave"].includes(s.search.provider) ||
+      !["apiKey", "deepseekApiKey"].every(k => typeof s.search[k] === "string" && s.search[k].length <= 512))
+    throw new Error("无效的联网搜索设置");
   if (!s.avatar || !["apiKey", "faceId", "faceName"].every(k => typeof s.avatar[k] === "string") ||
       s.avatar.apiKey.length > 512 || s.avatar.faceName.length > 80 || !["sfu", "direct"].includes(s.avatar.connectionMode) ||
       (s.avatar.faceId && !/^[a-zA-Z0-9_-]{1,100}$/.test(s.avatar.faceId)))
