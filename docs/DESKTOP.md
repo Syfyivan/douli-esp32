@@ -64,6 +64,10 @@ npm run desktop:start:packaged  # 独立运行 Windows 解包应用
 
 ## 验证
 
+2026-10-25 界面与流式阅读修复：提高辅助文字对比度和字号，补充输入焦点反馈，调整小屏按钮与平板历史抽屉。流式回答根据阅读位置决定是否跟随底部，向上回看时不再被新内容拉走；提供「回到最新消息」，并统一流式与完成消息的宽度约束。
+
+本轮 `node --test tests/chat-scroll.test.mjs tests/ui-state.test.mjs tests/settings-writer.test.mjs` 的 10 项测试与 `npm run build` 通过。在隔离数据及固定流式回复的后台实例中，先复现旧版自动跳动，再检查上翻保持位置、恢复跟随、回答完成和切换历史；检查 320、390、768、1280 px 布局，320/390 px 未见水平溢出。此轮没有重打包或发布安装程序，也不代表真实语音、ESP32、原生移动端或其他操作系统验收。后面的记录保留各自日期与验证范围。
+
 空间不足时，可设置 `DOULI_DESKTOP_CHECK_ROOT` 将独立验收目录放到其他磁盘；`.runtime/desktop-check.json` 仍保存最近一次检查的位置。免安装包的解压位置由进程环境变量 `TEMP` / `TMP` 决定。
 
 ```powershell
