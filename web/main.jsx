@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ChatScroll } from "./chat-scroll.mjs";
 import { createRoot } from "react-dom/client";
 import {
   MessageCircle,
@@ -324,6 +325,8 @@ function App() {
 }
 
 function Chat({ state, act, notify, setPage, openSettings, requestedSession, openExperiences, view = "chat" }) {
+  const [chatScroll] = useState(() => new ChatScroll());
+  const [showLatest, setShowLatest] = useState(false);
   const [composing, setComposing] = useState(false), [sourceFilter, setSourceFilter] = useState("all"), [dateFilter, setDateFilter] = useState("all");
   const initialized = useRef(false), opening = useRef(0), listing = useRef(0);
   const [sessions, setSessions] = useState([]),
@@ -353,7 +356,6 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
   const [visualSource, setVisualSource] = useState(""), [visionStatus, setVisionStatus] = useState("");
   const voice = useRef(null),
     controller = useRef(null),
-    bottom = useRef(null),
     scrollPane = useRef(null),
     activeSession = useRef(null),
     delta = useRef("");
@@ -402,10 +404,14 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     },
     [],
   );
-  useEffect(() => {
-    if ((composing || voiceState !== "off") && (messages.length || pending || partial))
-      bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, pending, partial]);
+  useLayoutEffect(() => {
+    if (composing || voiceState !== "off") setShowLatest(chatScroll.update(scrollPane.current));
+  }, [messages, pending, partial, composing, voiceState]);
+  const jumpToLatest = () => {
+    chatScroll.reset();
+    chatScroll.update(scrollPane.current);
+    setShowLatest(false);
+  };
   const setCurrent = (value) => {
     activeSession.current = value;
     setSession(value);
@@ -516,6 +522,8 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     stop();
     const data = await api("/sessions/" + item.id);
     if (request !== opening.current) return;
+    chatScroll.reset(false);
+    setShowLatest(false);
     setCurrent(data.session);
     setRouteInfo(null);
     setMessages(data.messages);
@@ -526,6 +534,8 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     setMetrics(null);
   };
   const fresh = () => {
+    chatScroll.reset();
+    setShowLatest(false);
     initialized.current = true;
     opening.current++;
     stop();
@@ -540,6 +550,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
   };
   const send = async () => {
     if (!text.trim() || busy) return;
+    chatScroll.reset();
     const input = text.trim();
     setText("");
     setBusy(true);
@@ -588,6 +599,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
   const startVoice = async (withAvatar = false) => {
     withAvatar = withAvatar === true;
     if (voiceState !== "off") return stop();
+    chatScroll.reset();
     // An initial archive fetch must not stop a microphone the user just started.
     initialized.current = true;
     opening.current++;
@@ -631,7 +643,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
       if (await capture.start(source, visualPreview.current)) { setVisualSource(source); setVisionStatus("每轮提问时发送一帧给画面理解模型，原图不保存"); }
     } catch (e) { notify(e.name === "NotAllowedError" ? "没有开启画面分享" : e.message, true); }
   };
-  const beginText = () => { initialized.current = true; opening.current++; setComposing(true); };
+  const beginText = () => { initialized.current = true; opening.current++; chatScroll.reset(); setComposing(true); };
   const visibleSessions = sessions.filter(s => (sourceFilter === "all" || conversationSource(s.source).kind === sourceFilter) && inDateRange(s.updated_at, dateFilter));
   const summary = (state.memorySummaries || []).find(s => s.session_id === session?.id);
   const source = conversationSource(session?.source, state.devices);
@@ -693,7 +705,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
             if (confirm("删除这段对话？其中未固定的来源记忆和保存的录音也会删除。")) act(async () => { stop(); await api("/sessions/" + session.id, "DELETE"); fresh(); setComposing(false); loadSessions(); });
           }}>删除这段对话</Button></div></details></div>}
         </div>
-        <div className="messages" ref={scrollPane}>
+        <div className="messages" ref={scrollPane} onScroll={e => setShowLatest(chatScroll.observe(e.currentTarget))}>
           {summary && <div className="archive-context"><BookOpen size={22} /><div><strong>这次聊到</strong><p>{summary.text}</p></div><button onClick={openExperiences}>查看经历<ChevronRight size={14} /></button></div>}
           {!messages.length && !pending && <div className="archive-empty"><span className="empty-icon"><MessageCircle size={30} /></span><h2>{composing ? "慢慢说，豆梨在这里" : "把聊过的日子，收在这里"}</h2><p>{composing ? "写下想聊的事，开启一段新的对话。" : "选择左侧的一段对话，回看原文、修正识别或导出记录。"}</p><Button icon={Plus} onClick={fresh}>开始文字对话</Button>{!state.configured.daily && <button className="setup-prompt" onClick={() => setPage("settings")}>连接你的模型<ChevronRight size={15} /></button>}</div>}
           {session && !!messages.length && <div className="date-divider">{time(session.created_at)}</div>}
@@ -717,7 +729,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
           {pending && (voiceState === "off" || captions) && (
             <div className="message assistant">
               <div className="avatar">d.</div>
-              <div>
+              <div className="message-body">
                 <RoutingDetails routing={routeInfo} />
                 <span className="message-name">
                   {state.settings.assistant.name}
@@ -734,9 +746,9 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
               {searchProgress || "正在回答"}<span>···</span>
             </div>
           )}
-          <div ref={bottom} />
         </div>
         <div className="compose-area">
+          {showLatest && (composing || voiceState !== "off") && <div className="latest-message"><button onClick={jumpToLatest}>回到最新消息 ↓</button></div>}
           {partial && (voiceState === "off" || captions) && <div className="partial">听到：{partial}</div>}
           {voiceState !== "off" && (
             <div className="call-panel">

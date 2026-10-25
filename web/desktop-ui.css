@@ -112,3 +112,4 @@ main{margin-left:210px;width:calc(100% - 210px);min-width:0}main>header{height:5
   .video-room-note { margin-top:9px; font-size:9px; }
 }
 .video-room-latency { display: block; padding: 8px 12px; color: var(--muted); }
+.latest-message{display:flex;justify-content:center;padding:8px 0}.latest-message>button{min-height:36px;border-radius:18px;border-color:#cbd9c4;color:var(--green);box-shadow:0 2px 8px #173f3310}@media(max-width:640px){.latest-message>button{min-height:44px}}
