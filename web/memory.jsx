@@ -1,11 +1,17 @@
 import React, { useEffect, useState } from "react";
 import { Plus, Search, BookOpen, Brain, Pin, Check, ChevronRight, RefreshCw, LockKeyhole, Pencil, X } from "lucide-react";
 import { inDateRange } from "./ui-state.mjs";
+import { DiaryPage } from "./diary.jsx";
 const statuses = { active: "已确认", suggested: "待确认", conflict: "有冲突", needs_review: "原话待复核", superseded: "历史版本", expired: "已过期" };
 const kinds = { fact: "长期事实", preference: "稳定偏好", event: "一次经历", state: "临时状态" };
 const date = value => value ? new Date(value).toLocaleString("zh-CN", { year: "numeric", month: "short", day: "numeric" }) : "未指定";
 const pendingStatuses = ["suggested", "conflict", "needs_review"];
-export function MemoryPage({ state, act, notify, api, Section, Field, Form, Button, view = "memory", openConversation }) {
+export function MemoryPage(props) {
+  return props.view === "experiences"
+    ? <DiaryPage key={props.state.people?.selectedId || "default"} {...props} renderSummaries={() => <MemoryContents {...props} />} />
+    : <MemoryContents {...props} />;
+}
+function MemoryContents({ state, act, notify, api, Section, Field, Form, Button, view = "memory", openConversation }) {
   const [filter, setFilter] = useState(""), [tab, setTab] = useState("current"), [editor, setEditor] = useState(null), [category, setCategory] = useState("all");
   const [preference, setPreference] = useState(null), [sources, setSources] = useState({}), [query, setQuery] = useState(""), [found, setFound] = useState(null);
   const [period, setPeriod] = useState("all"), [summaryKind, setSummaryKind] = useState("day");

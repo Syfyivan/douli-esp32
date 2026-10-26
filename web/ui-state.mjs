@@ -10,6 +10,7 @@ export function readUiPreferences(storage) {
   catch { return normalizeUiPreferences(null); }
 }
 export function conversationSource(source, devices = []) {
+  if (source === "diary") return { kind: "text", label: "手动生活记录" };
   if (source === "browser") return { kind: "text", label: "电脑文字" };
   if (source === "browser-voice") return { kind: "voice", label: "电脑语音" };
   if (!source) return { kind: "unknown", label: "来源未记录" };

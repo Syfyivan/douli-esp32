@@ -74,11 +74,27 @@ export function migrateMemory(db) {
       END;
     `);
     migrateIncrementalMemory(db);
+    migrateDiary(db);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+function migrateDiary(db) {
+  const columns = new Set(db.prepare("PRAGMA table_info(memory_episodes)").all().map(c => c.name));
+  for (const [name, type] of Object.entries({ topics: "TEXT NOT NULL DEFAULT '[]'", origin: "TEXT NOT NULL DEFAULT 'automatic'",
+    revision: "INTEGER NOT NULL DEFAULT 1", deleted: "INTEGER NOT NULL DEFAULT 0" }))
+    if (!columns.has(name)) db.exec(`ALTER TABLE memory_episodes ADD COLUMN ${name} ${type}`);
+  db.exec(`CREATE INDEX IF NOT EXISTS diary_date ON memory_episodes(deleted,occurred_at,id);
+    CREATE TRIGGER IF NOT EXISTS diary_invalidate_update AFTER UPDATE ON memory_episodes BEGIN
+      DELETE FROM memory_summaries WHERE session_id IN (OLD.session_id,NEW.session_id)
+        OR day IN (strftime('%Y-%m-%d',OLD.occurred_at,'localtime'),strftime('%Y-%m-%d',NEW.occurred_at,'localtime'));
+    END;
+    CREATE TRIGGER IF NOT EXISTS diary_invalidate_delete AFTER DELETE ON memory_episodes BEGIN
+      DELETE FROM memory_summaries WHERE session_id=OLD.session_id OR day=strftime('%Y-%m-%d',OLD.occurred_at,'localtime');
+    END;`);
 }
 
 function migrateIncrementalMemory(db) {

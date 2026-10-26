@@ -16,6 +16,7 @@ import { ChatEngine } from "./engine.mjs";
 import { Gateway } from "./gateway.mjs";
 import { putMemory, forgetMemory, evidenceFor } from "./memory.mjs";
 import { MemoryService } from "./memory-service.mjs";
+import { saveEntry, removeEntry, listEntries, getEntry } from "./diary.mjs";
 import { embeddingProfile, rerankProfile } from "./memory-search.mjs";
 import { recordCorrection } from "./input.mjs";
 import { complete, synthesize, embed, rerank, speechProfile } from "./providers.mjs";
@@ -351,6 +352,16 @@ export async function createApplication({
     return saved;
   });
   admin.get("/api/memory/status", async () => memory.status());
+  admin.get("/api/memory/diary", async req => listEntries(store, req.query));
+  admin.post("/api/memory/diary", async req => {
+    const saved = saveEntry(store, { ...req.body, id: undefined }); memory.schedule(); return saved;
+  });
+  admin.put("/api/memory/diary/:id", async req => {
+    const saved = saveEntry(store, { ...req.body, id: req.params.id }); memory.schedule(); return saved;
+  });
+  admin.delete("/api/memory/diary/:id", async req => {
+    const result = removeEntry(store, req.params.id, req.body?.revision); memory.schedule(); return result;
+  });
   admin.post("/api/memory/maintenance", async () => {
     store.db.prepare("UPDATE memory_jobs SET attempts=0,next_at=? WHERE attempts>=5").run(new Date().toISOString());
     void memory.run().catch(() => {});
@@ -359,8 +370,11 @@ export async function createApplication({
   admin.get("/api/memory/search", async (req) => memory.search.memories(text(req.query.q, 500), { includePending: req.query.pending === "true", limit: 20 }));
   admin.get("/api/memory/history", async (req) => memory.search.history(text(req.query.q, 500), { from: req.query.from, to: req.query.to }));
   admin.get("/api/memory/episodes", async (req) => memory.search.episodes(text(req.query.q, 500), { from: req.query.from, to: req.query.to, limit: 20 }));
-  admin.get("/api/memory/episodes/:id/sources", async (req) => store.db.prepare(`SELECT e.quote,m.id,m.session_id,m.text,m.created_at
-    FROM episode_sources e JOIN messages m ON m.id=e.message_id WHERE e.episode_id=? ORDER BY m.created_at`).all(req.params.id));
+  admin.get("/api/memory/episodes/:id/sources", async (req) => {
+    getEntry(store, req.params.id);
+    return store.db.prepare(`SELECT e.quote,m.id,m.session_id,m.text,m.created_at
+      FROM episode_sources e JOIN messages m ON m.id=e.message_id WHERE e.episode_id=? ORDER BY m.created_at`).all(req.params.id);
+  });
   admin.get("/api/memories/:id/evidence", async (req) => evidenceFor(store, req.params.id));
   admin.get("/api/memory/summaries/:id/sources", async (req) => store.db.prepare("SELECT m.id,m.session_id,m.text,m.created_at FROM messages m JOIN summary_sources s ON s.message_id=m.id WHERE s.summary_id=? ORDER BY m.created_at").all(req.params.id));
   admin.delete("/api/memories/:id", async (req) => {

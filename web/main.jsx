@@ -303,7 +303,7 @@ function App() {
             {page === "assistant" && <AssistantPage {...shared} {...{ api, Section, Field, Button, Toggle }} />}{" "}
             {page === "memory" && <>
               <div className="page-title"><span className="eyebrow">YOUR PERSONAL SPACE</span><h1>我的资料</h1><p>那些重要的小事，和一起走过的日子。</p></div>
-              <div className="profile-tabs" role="tablist" aria-label="我的资料">{[["memory", "偏好与记忆", Brain], ["experiences", "近期经历", BookOpen], ["health", "健康资料", HeartPulse]].map(([id, label, Icon]) => <button key={id} role="tab" aria-selected={profileTab === id} onClick={() => setProfileTab(id)}><Icon size={16} />{label}</button>)}</div>
+              <div className="profile-tabs" role="tablist" aria-label="我的资料">{[["memory", "偏好与记忆", Brain], ["experiences", "生活记录", BookOpen], ["health", "健康资料", HeartPulse]].map(([id, label, Icon]) => <button key={id} role="tab" aria-selected={profileTab === id} onClick={() => setProfileTab(id)}><Icon size={16} />{label}</button>)}</div>
               {profileTab === "health" ? <HealthPage {...shared} {...{ api, Section, Field, Button }} /> : <MemoryPage {...shared} view={profileTab} {...{ api, Section, Field, Form, Button }} />}
             </>}
             {page === "devices" && <Devices {...shared} />}{" "}

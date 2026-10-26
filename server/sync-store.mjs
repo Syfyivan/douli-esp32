@@ -120,8 +120,8 @@ export class SyncStore {
           if (change.collection === "settings") row.value = { ...row.value, people: this.store.settings().people };
           // Revision is a local editor guard: even equal remote revisions must
           // invalidate a form opened before this exchange.
-          if (change.collection === "health_records") {
-            const previous = this.db.prepare("SELECT revision FROM health_records WHERE id=?").get(row.id);
+          if (["health_records", "memory_episodes"].includes(change.collection)) {
+            const previous = this.db.prepare(`SELECT revision FROM ${quote(change.collection)} WHERE id=?`).get(row.id);
             if (previous) row.revision = Math.max(previous.revision + 1, row.revision);
           }
           const parent = change.collection === "messages" ? ["sessions", "id", row.session_id] :

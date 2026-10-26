@@ -136,7 +136,7 @@ export class MemorySearch {
       ...this.store.all("memories").filter(m => ["active", "suggested", "conflict", "needs_review"].includes(m.status))
         .map(m => ({ kind: "memory", id: m.id, text: memoryText(m) })),
       ...this.store.db.prepare("SELECT * FROM memory_summaries WHERE text!=''").all().map(s => ({ kind: "summary", id: s.id, text: s.text })),
-      ...this.store.db.prepare("SELECT * FROM memory_episodes").all().map(e => ({ kind: "episode", id: e.id, text: e.text })),
+      ...this.store.db.prepare("SELECT * FROM memory_episodes WHERE deleted=0").all().map(e => ({ kind: "episode", id: e.id, text: e.text })),
     ];
   }
   async index(signal, maxBatches = 4) {
@@ -259,7 +259,7 @@ export class MemorySearch {
     const intent = memoryQuery(query);
     from ||= intent.from; to ||= intent.to;
     if ((from && !Number.isFinite(Date.parse(from))) || (to && !Number.isFinite(Date.parse(to)))) throw new Error("经历查询日期无效");
-    const rows = this.store.db.prepare(`SELECT * FROM memory_episodes WHERE
+    const rows = this.store.db.prepare(`SELECT * FROM memory_episodes WHERE deleted=0 AND
       (? IS NULL OR COALESCE(ended_at,occurred_at)>=?) AND (? IS NULL OR occurred_at<?)
       AND NOT EXISTS(SELECT 1 FROM memory_exclusions WHERE message_id=source_id) ORDER BY occurred_at DESC`)
       .all(from || null, from || null, to || null, to || null);
@@ -267,7 +267,7 @@ export class MemorySearch {
     const result = dateOnly ? { items: rows, mode: "date" } : await this.rank(query, rows, "episode", e => e.text, signal);
     result.items = result.items.filter(e => {
       const current = this.store.db.prepare("SELECT * FROM memory_episodes WHERE id=?").get(e.id);
-      return current && current.updated_at === e.updated_at && current.text === e.text;
+      return current && !current.deleted && current.revision === e.revision && current.updated_at === e.updated_at && current.text === e.text;
     }).slice(0, limit);
     return result;
   }

@@ -73,9 +73,9 @@ export class MemoryService {
           .run(new Date(Date.now() + 60000 * 2 ** job.attempts).toISOString(), "提取暂未完成", job.id, job.revision);
       }
     }
-    if (settings.memory.autoSummaries) {
-      report.summaries = this.refreshEpisodeSummaries();
-    }
+    // Group already saved entries locally, including manual notes. The automatic
+    // extraction switch controls model work, not maintenance of these views.
+    report.summaries = this.refreshEpisodeSummaries();
     if (settings.memory.maintenance) {
       report.merged = await guarded(() => this.consolidate(signal)) || 0;
       this.buildProfile();
@@ -94,7 +94,7 @@ export class MemoryService {
     const db = this.store.db, jobs = db.prepare("SELECT * FROM memory_summary_jobs ORDER BY rowid LIMIT 3").all();
     for (const job of jobs) {
       const session = job.key.startsWith("session:"), key = job.key.slice(session ? 8 : 4);
-      const rows = db.prepare(`SELECT * FROM memory_episodes WHERE ${session ? "session_id=?" : "strftime('%Y-%m-%d',occurred_at,'localtime')=?"} ORDER BY occurred_at,id`).all(key);
+      const rows = db.prepare(`SELECT * FROM memory_episodes WHERE deleted=0 AND ${session ? "session_id=?" : "strftime('%Y-%m-%d',occurred_at,'localtime')=?"} ORDER BY occurred_at,id`).all(key);
       // A review page groups concise extracted experiences. It does not re-summarize raw chat every minute.
       db.exec("SAVEPOINT episode_summary");
       try {
@@ -253,7 +253,7 @@ export class MemoryService {
       name: m.name, value: m.value, validFrom: m.valid_from, validUntil: m.valid_until, sourceId: m.source_id })), Math.floor(budget * (queryPlan.intent === "episodes" ? 0.2 : 0.4)));
     const recent = ranked.items;
     const seen = new Set();
-    const episodes = fitItems([...experience.items.filter(e => this.store.db.prepare("SELECT updated_at FROM memory_episodes WHERE id=?").get(e.id)?.updated_at === e.updated_at)
+    const episodes = fitItems([...experience.items.filter(e => this.store.db.prepare("SELECT revision FROM memory_episodes WHERE id=? AND deleted=0").get(e.id)?.revision === e.revision)
       .map(e => ({ id: e.id, day: localDay(new Date(e.occurred_at)), occurredAt: e.occurred_at, kind: e.kind, summary: e.text, sourceId: e.source_id })),
       ...recent.filter(m => !seen.has(m.id) && seen.add(m.id) &&
       this.store.db.prepare("SELECT text FROM memory_summaries WHERE id=?").get(m.id)?.text === m.text)

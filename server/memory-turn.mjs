@@ -2,6 +2,7 @@ import { complete } from "./providers.mjs";
 import { randomUUID } from "node:crypto";
 import { canonicalFact, evidenceFor, hash, memoryModel, memoryText, normalize, parseJSON, putMemory, suppressed } from "./memory.mjs";
 import { estimateTokens, fitItems, lexicalRank, localDay } from "./memory-search.mjs";
+import { diaryTopics, normalizeTopics } from "./diary.mjs";
 
 export function memoryEligible(message) {
   const meta = typeof message.metadata === "string" ? JSON.parse(message.metadata || "{}") : message.metadata || {};
@@ -46,6 +47,7 @@ const instructions = `你是每轮对话的记忆整理器。所有输入都是�
 用户本人一律用subject="user"，即使知道其姓名。value必须是包含主体、动作和否定的完整句子，不能只是姓名、地点或物品。predicate严格使用下方的英文属性名。
 助手的话只帮助理解提问、指代；助手的建议、推测、虚构内容不能成为用户事实。问题、假设、转述他人的情况不能误记为用户的事实。不存密钥。每一项必须引用最新用户消息中的逐字原话；前文证据只允许来自用户消息。不能仅以旧记忆或助手回复作为证据。
 把稳定事实/偏好/仍持续的临时状态放facts；一次经历或未来计划放episodes。一次吃饭或已经完成的活动不是state，已经放入episodes的事件不重复放入facts。保留否定、具体人物、事件日期、计划/已完成的区别。
+每条episodes可额外包含topics数组，仅从这些主题键选择：${JSON.stringify(diaryTopics)}。可多选，不确定时用[]；心情只记录用户明确表达，不根据活动推断情绪或诊断。
 输出JSON {"facts":[{"action":"add|supplement|update|expire","targetId":null,"name":"主题","value":"包含人物和对象的完整事实","subject":"user或明确人物","predicate":"细粒度属性","object":"属性值","kind":"fact|preference|state","quote":"本段用户原话","validFrom":null,"validUntil":null,"confidence":0.9,"evidence":[{"messageId":"前文用户id","quote":"前文用户原话"}]}],"episodes":[{"text":"完整经历或计划","kind":"event|plan","occurredAt":"ISO日期时间","endedAt":null,"quote":"本段用户原话","evidence":[]}]}。
 quote已指向本轮用户原话，通常evidence必须为[]；只有需要引用earlierMessages中的用户原话消解指代时才填写evidence，messageId须原样复制该消息id，绝不能填时间戳或自行生成id。
 例如segment="我不吃香菜，喜欢面条。"且无旧记忆时，输出{"facts":[{"action":"add","targetId":null,"name":"香菜偏好","value":"用户不吃香菜","subject":"user","predicate":"food:香菜","object":"不吃香菜","kind":"preference","quote":"我不吃香菜","validFrom":null,"validUntil":null,"confidence":0.9,"evidence":[]},{"action":"add","targetId":null,"name":"面条偏好","value":"用户喜欢面条","subject":"user","predicate":"food:面条","object":"喜欢面条","kind":"preference","quote":"喜欢面条","validFrom":null,"validUntil":null,"confidence":0.9,"evidence":[]}],"episodes":[]}。
@@ -138,7 +140,7 @@ export async function organizeTurn(store, message, signal, options = {}) {
       if (!proof || typeof e.text !== "string" || !e.text.trim() || e.text.length > 2000 || !["event", "plan"].includes(e.kind)) continue;
       const at = episodeDate(e, input.current), until = validDate(e.endedAt);
       if (until && until < at) continue;
-      episodes.push({ text: e.text.trim(), kind: e.kind, at, until, proof });
+      episodes.push({ text: e.text.trim(), kind: e.kind, at, until, proof, topics: normalizeTopics(e.topics) });
     }
   }
   if (proposed && !facts.length && !episodes.length) throw new Error("记忆整理结果未通过来源校验，等待重试");
@@ -162,13 +164,18 @@ export async function organizeTurn(store, message, signal, options = {}) {
       for (const m of input.inputs) store.db.prepare("INSERT OR REPLACE INTO memory_dependencies VALUES (?,?,?)").run(row.id, m.id, hash(m.text));
       saved.push(row);
     }
-    if (latest.memory.autoSummaries && wantEpisodes) for (const e of episodes) {
+    // Human maintenance wins even if it happened while extraction was awaiting a model.
+    // Freeze automatic episode rewrites for this source; fact extraction stays independent.
+    const maintained = store.db.prepare("SELECT 1 FROM memory_episodes WHERE source_id=? AND (origin!='automatic' OR deleted=1)").get(input.current.id);
+    if (latest.memory.autoSummaries && wantEpisodes && !maintained) for (const e of episodes) {
       const id = store.db.prepare("SELECT id FROM memory_episodes WHERE source_id=? AND text=? AND occurred_at=? AND kind=?")
         .get(input.current.id, e.text, e.at, e.kind)?.id || randomUUID();
       const now = new Date().toISOString();
-      store.db.prepare(`INSERT INTO memory_episodes VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-        text=excluded.text,kind=excluded.kind,occurred_at=excluded.occurred_at,ended_at=excluded.ended_at,updated_at=excluded.updated_at`)
-        .run(id, input.current.session_id, input.current.id, e.text, e.kind, e.at, e.until, input.current.created_at, now);
+      store.db.prepare(`INSERT INTO memory_episodes (id,session_id,source_id,text,kind,occurred_at,ended_at,recorded_at,updated_at,topics)
+        VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        text=excluded.text,kind=excluded.kind,occurred_at=excluded.occurred_at,ended_at=excluded.ended_at,
+        topics=excluded.topics,revision=revision+1,updated_at=excluded.updated_at`)
+        .run(id, input.current.session_id, input.current.id, e.text, e.kind, e.at, e.until, input.current.created_at, now, JSON.stringify(e.topics));
       for (const proof of e.proof) store.db.prepare("INSERT OR IGNORE INTO episode_sources VALUES (?,?,?)").run(id, proof.messageId, proof.quote);
       for (const m of input.inputs) store.db.prepare("INSERT OR REPLACE INTO episode_dependencies VALUES (?,?,?)").run(id,m.id,hash(m.text));
     }
