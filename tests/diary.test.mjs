@@ -79,6 +79,26 @@ test("invalid dates, ranges, content and topics leave no partially created sourc
   assert.equal(store.sessions().length, 0);
 });
 
+test("diary rejects rollover times and non-string topic filters without writes", t => {
+  const { store } = fixture(t);
+  for (const occurredAt of ["2026-10-25T24:00", "2026-10-25T24:00:00Z", "2026-10-25T24:00:00+08:00", "2026-10-25T12:60", "2026-10-25T12:30:60Z"]) {
+    assert.throws(() => saveEntry(store, entry({ occurredAt })), e => e.statusCode === 400, occurredAt);
+  }
+  for (const topic of [["life"], {}, 0, null])
+    assert.throws(() => listEntries(store, { topic }), e => e.statusCode === 400);
+  for (const kind of [["event"], {}, 0, null])
+    assert.throws(() => listEntries(store, { kind }), e => e.statusCode === 400);
+  assert.equal(store.sessions().length, 0);
+  assert.equal(listEntries(store).total, 0);
+});
+
+test("diary preserves valid leap days and explicit timezone offsets", t => {
+  const { store } = fixture(t);
+  const saved = saveEntry(store, entry({ occurredAt: "2024-02-29T23:59:59.123+08:00" }));
+  assert.equal(saved.occurred_at, "2024-02-29T15:59:59.123Z");
+  assert.throws(() => saveEntry(store, entry({ endedAt: "2026-10-25T24:00" })), e => e.statusCode === 400);
+});
+
 test("edits reject stale revisions and invalidate summaries and vectors immediately", t => {
   const { store } = fixture(t), saved = saveEntry(store, entry());
   const worker = new MemoryService(store); worker.refreshEpisodeSummaries();
@@ -150,6 +170,22 @@ test("an edit arriving during retrieval cannot reintroduce a removed record", as
   assert.equal((await worker.search.episodes("散步")).items.length, 0);
 });
 
+test("indexing discards diary entries changed or removed while embeddings are in flight", async t => {
+  const { store } = fixture(t), settings = store.settings();
+  settings.memory.semantic = true;
+  settings.models.embedding = { baseUrl: "https://fixture.invalid/v1", model: "fixture" };
+  store.saveSettings(settings);
+  const removed = saveEntry(store, entry()), edited = saveEntry(store, entry({ text: "看电影" }));
+  const kept = saveEntry(store, entry({ text: "游泳" }));
+  const worker = new MemoryService(store, { embed: async (_profile, inputs) => {
+    removeEntry(store, removed.id, removed.revision);
+    saveEntry(store, { ...entry(), id: edited.id, revision: edited.revision, text: "实际去读书" });
+    return inputs.map(() => [1, 0]);
+  } });
+  assert.equal((await worker.search.index()).indexed, 1);
+  assert.deepEqual(store.db.prepare("SELECT record_id FROM memory_vectors").all().map(row => row.record_id), [kept.id]);
+});
+
 test("sync carries topics and invalidates open editors even at equal revisions", t => {
   const a = fixture(t).store, b = fixture(t).store, sa = new SyncStore(a), sb = new SyncStore(b);
   const saved = saveEntry(a, entry()); sb.apply(sa.snapshot());
@@ -171,6 +207,9 @@ test("diary API isolates people and reports edit conflicts", async t => {
   const request = (url, method = "GET", payload, person = "") => app.admin.inject({ url: "/api" + url, method, payload,
     headers: { host: "localhost", "x-douli-person": person } });
   const a = (await request("/people", "POST", { name: "A" })).json();
+  assert.equal((await request("/memory/diary?topic=life&topic=work", "GET", undefined, a.id)).statusCode, 400);
+  assert.equal((await request("/memory/diary?kind=event&kind=plan", "GET", undefined, a.id)).statusCode, 400);
+  assert.equal((await request("/memory/diary", "POST", entry({ occurredAt: "2026-10-25T24:00Z" }), a.id)).statusCode, 400);
   const created = await request("/memory/diary", "POST", entry(), a.id);
   assert.equal(created.statusCode, 200); const saved = created.json();
   assert.equal((await request("/memory/diary")).json().total, 0);

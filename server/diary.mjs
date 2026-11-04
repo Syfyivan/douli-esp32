@@ -16,6 +16,9 @@ function timestamp(value, required = false) {
     return null;
   }
   if (typeof value !== "string" || !/^\d{4}-\d\d-\d\d(?:T\d\d:\d\d(?::\d\d(?:\.\d{1,3})?)?(?:Z|[+-]\d\d:\d\d)?)?$/.test(value)) throw error("日期格式无效");
+  // Date accepts 24:00 by rolling into tomorrow; diary input must keep its day.
+  if (value.length > 10 && (Number(value.slice(11, 13)) > 23 || Number(value.slice(14, 16)) > 59 ||
+      (value[16] === ":" && Number(value.slice(17, 19)) > 59))) throw error("时间无效");
   const calendar = new Date(value.slice(0, 10) + "T00:00:00Z");
   if (!Number.isFinite(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== value.slice(0, 10)) throw error("日期不存在");
   const date = new Date(value.length === 10 ? value + "T00:00:00" : value);
@@ -33,8 +36,8 @@ function checkRevision(row, revision) {
 }
 export function listEntries(store, { q = "", from, to, topic = "", kind = "", limit = 30, offset = 0 } = {}) {
   if (typeof q !== "string" || q.length > 500) throw error("查询内容过长");
-  if (topic && !Object.hasOwn(diaryTopics, topic)) throw error("未知的生活主题");
-  if (kind && !["event", "plan"].includes(kind)) throw error("请选择经历或计划");
+  if (typeof topic !== "string" || (topic && !Object.hasOwn(diaryTopics, topic))) throw error("未知的生活主题");
+  if (typeof kind !== "string" || (kind && !["event", "plan"].includes(kind))) throw error("请选择经历或计划");
   from = timestamp(from); to = timestamp(to);
   if (from && to && from >= to) throw error("结束日期应晚于开始日期");
   limit = Number(limit); offset = Number(offset);

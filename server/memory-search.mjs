@@ -140,25 +140,38 @@ export class MemorySearch {
     ];
   }
   async index(signal, maxBatches = 4) {
+    signal?.throwIfAborted();
     const profile = embeddingProfile(this.store);
     if (!profile) return { indexed: 0, configured: false };
     const key = modelKey(profile);
-    const missing = this.documents().filter(d => {
-      const v = this.store.db.prepare("SELECT * FROM memory_vectors WHERE kind=? AND record_id=?").get(d.kind, d.id);
-      return !v || v.model_key !== key || v.content_hash !== hash(d.text);
+    const sameProfile = () => {
+      const latest = embeddingProfile(this.store);
+      return latest && modelKey(latest) === key && latest.apiKey === profile.apiKey;
+    };
+    const documents = this.documents().map(d => ({ ...d, contentHash: hash(d.text) }));
+    let current = new Map(documents.map(d => [`${d.kind}:${d.id}`, d.contentHash]));
+    const lookup = this.store.db.prepare("SELECT model_key,content_hash FROM memory_vectors WHERE kind=? AND record_id=?");
+    const write = this.store.db.prepare("INSERT OR REPLACE INTO memory_vectors VALUES (?,?,?,?,?)");
+    const missing = documents.filter(d => {
+      const v = lookup.get(d.kind, d.id);
+      return !v || v.model_key !== key || v.content_hash !== d.contentHash;
     }).slice(0, 16 * maxBatches);
     let indexed = 0;
     for (let start = 0; start < missing.length; start += 16) {
       signal?.throwIfAborted();
-      const batch = missing.slice(start, start + 16);
+      if (this.store.closed || !sameProfile()) break;
+      // The previous request may have yielded to edits or deletions. Check again
+      // before sending queued text outside the device, not only before saving it.
+      const batch = missing.slice(start, start + 16).filter(d => current.get(`${d.kind}:${d.id}`) === d.contentHash);
+      if (!batch.length) continue;
       const vectors = await this.embed(profile, batch.map(d => d.text.slice(0, 6000)), signal);
-      if (this.store.closed) break;
-      const current = new Map(this.documents().map(d => [`${d.kind}:${d.id}`, hash(d.text)]));
+      signal?.throwIfAborted();
+      if (this.store.closed || !sameProfile()) break;
+      current = new Map(this.documents().map(d => [`${d.kind}:${d.id}`, hash(d.text)]));
       for (let i = 0; i < batch.length; i++) {
         const d = batch[i];
-        if (current.get(`${d.kind}:${d.id}`) !== hash(d.text)) continue;
-        this.store.db.prepare("INSERT OR REPLACE INTO memory_vectors VALUES (?,?,?,?,?)")
-          .run(d.kind, d.id, hash(d.text), key, JSON.stringify(vectors[i]));
+        if (current.get(`${d.kind}:${d.id}`) !== d.contentHash) continue;
+        write.run(d.kind, d.id, d.contentHash, key, JSON.stringify(vectors[i]));
         indexed++;
       }
     }

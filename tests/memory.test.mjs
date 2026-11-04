@@ -26,6 +26,58 @@ function fixture(t, patch = {}) {
 const profile = { baseUrl: "http://embedding.invalid/v1", model: "test-vector" };
 const syntheticEmbed = async (_profile, inputs) => inputs.map(text => /香菜|晚饭/.test(text) ? [1, 0, 0] : /上海|杭州/.test(text) ? [0, 1, 0] : [0, 0, 1]);
 
+test("index batches do not send deleted or edited pending records to the provider", async t => {
+  const { store } = fixture(t, { models: { embedding: profile } });
+  const facts = Array.from({ length: 20 }, (_, i) => putMemory(store, { name: `记录${i}`, value: `原始内容[${i}]` }));
+  const sent = [];
+  let removed, edited;
+  const search = new MemorySearch(store, { embed: async (p, inputs) => {
+    sent.push(...inputs);
+    if (!removed) {
+      const pending = facts.filter(f => !inputs.some(text => text.includes(f.value)));
+      [removed, edited] = pending;
+      assert.ok(removed && edited, "fixture must span multiple batches");
+      forgetMemory(store, removed.id);
+      store.db.prepare("UPDATE memories SET value=?,object=? WHERE id=?").run("更新后的内容", "更新后的内容", edited.id);
+    }
+    return syntheticEmbed(p, inputs);
+  } });
+  const result = await search.index();
+  assert.equal(result.indexed, 18);
+  assert.ok(!sent.some(text => text.includes(removed.value)));
+  assert.ok(!sent.some(text => text.includes(edited.value)));
+  assert.equal((await search.index()).indexed, 1, "edited record is indexed on the next pass");
+});
+
+for (const change of ["disable", "model", "endpoint", "credentials"]) test(`index discards in-flight results after ${change} changes`, async t => {
+  const { store } = fixture(t, { models: { embedding: profile } });
+  for (let i = 0; i < 20; i++) putMemory(store, { name: `记录${i}`, value: `内容${i}` });
+  let calls = 0;
+  const search = new MemorySearch(store, { embed: async (p, inputs) => {
+    calls++;
+    const patch = change === "disable" ? { memory: { semantic: false } } :
+      { models: { embedding: change === "model" ? { model: "replacement" } : change === "endpoint" ?
+        { baseUrl: "http://replacement.invalid/v1" } : { apiKey: "synthetic-test-credential" } } };
+    store.saveSettings(mergeSettings(store.settings(), patch));
+    return syntheticEmbed(p, inputs);
+  } });
+  assert.equal((await search.index()).indexed, 0);
+  assert.equal(calls, 1, "do not send another batch using the previous configuration");
+  assert.equal(store.db.prepare("SELECT count(*) n FROM memory_vectors").get().n, 0);
+});
+
+test("cancelled indexing cannot write a late provider response", async t => {
+  const { store } = fixture(t, { models: { embedding: profile } });
+  putMemory(store, { name: "饮食", value: "不吃香菜" });
+  const control = new AbortController();
+  const search = new MemorySearch(store, { embed: async (p, inputs) => {
+    control.abort();
+    return syntheticEmbed(p, inputs);
+  } });
+  await assert.rejects(search.index(control.signal), { name: "AbortError" });
+  assert.equal(store.db.prepare("SELECT count(*) n FROM memory_vectors").get().n, 0);
+});
+
 test("additive migration preserves legacy review state and is repeatable", t => {
   const { store, directory } = fixture(t);
   const m = putMemory(store, { name: "称呼", value: "小南", pinned: true, status: "suggested" });
