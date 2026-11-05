@@ -2,7 +2,7 @@
   "name": "douli-esp32",
   "version": "0.1.0",
   "private": true,
-  "description": "豆梨个人语音助手桌面端",
+  "description": "豆梨 ESP32 实体电子宠物的配套后台与桌面管理端",
   "author": "Douli",
   "main": "desktop/main.mjs",
   "type": "module",
