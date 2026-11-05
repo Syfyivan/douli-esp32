@@ -10,6 +10,8 @@
     "node": ">=22.13"
   },
   "scripts": {
+    "site:preview": "node scripts/preview-site.mjs",
+    "site:check": "node scripts/check-site.mjs",
     "start": "node server/index.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",

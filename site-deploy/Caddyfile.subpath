@@ -1,0 +1,14 @@
+# Import inside the existing HTTPS site block. Publish ONLY site/ files.
+redir /douli /douli/ 308
+handle_path /douli/* {
+    root * /srv/douli/current
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        Cache-Control "public, max-age=300"
+    }
+    file_server
+}

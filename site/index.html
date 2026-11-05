@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f4ec">
+  <title>豆梨 Douli — 把日子，说给豆梨听。</title>
+  <meta name="description" content="豆梨 Douli，个人语音陪伴助手。连接电脑与 ESP32，支持自然语音交互、可追溯的本地记忆和生活记录。了解项目，动手运行。">
+  <meta property="og:title" content="豆梨 Douli — 把日子，说给豆梨听。">
+  <meta property="og:description" content="一个能开口聊天，也能把生活慢慢记下来的个人语音助手。">
+  <meta property="og:type" content="website">
+  <link rel="icon" type="image/svg+xml" href="./assets/mark.svg">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body id="top">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="header wrap">
+    <a class="brand" href="#top" aria-label="豆梨 Douli 首页"><img src="./assets/mark.svg" alt="" width="36" height="36"><span>豆梨<span class="wordmark">douli</span></span></a>
+    <nav aria-label="主导航" id="navigation"><a href="#experience">相处日常</a><a href="#memory">记住生活</a><a href="#inside">了解豆梨</a><a class="nav-cta" href="#start">让豆梨住进来 <span aria-hidden="true">↗</span></a></nav>
+    <button class="menu-toggle" aria-expanded="false" aria-controls="navigation" aria-label="打开导航"><span></span><span></span></button>
+  </header>
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="status-dot"></span> A LITTLE COMPANY, EVERY DAY</p>
+        <h1 id="hero-title">把日子，<br>说给<span class="pear-word">豆梨<svg viewBox="0 0 200 14" aria-hidden="true"><path d="M3 10Q90-1 197 7"/></svg></span>听。</h1>
+        <p class="hero-description">跟桌上的小音箱聊聊今天。回到电脑，还能翻看当时的原话，改一改想记住的事。</p>
+        <div class="hero-actions"><a class="button button-dark" href="#experience">认识一下豆梨 <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/Syfyivan/douli-esp32">看看它怎么做的 <span aria-hidden="true">↗</span></a></div>
+        <div class="hero-note"><span class="tiny-icon" aria-hidden="true">⌁</span><span>ESP32 音箱 · Windows 桌面 · Android</span></div>
+      </div>
+      <div class="hero-art" aria-label="豆梨品牌形象：一颗安静微笑的绿色小梨">
+        <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+        <span class="art-caption">YOUR EVERYDAY COMPANION</span>
+        <span class="art-spark spark-one" aria-hidden="true">✳</span><span class="art-spark spark-two" aria-hidden="true">+</span>
+        <div class="art-message message-user"><span class="message-dot"></span>豆梨，我回来了。</div>
+        <div class="pear-shadow"></div>
+        <svg class="pear" viewBox="0 0 400 480" role="img" aria-label="豆梨小梨形象插画">
+          <defs><radialGradient id="skin" cx="32%" cy="25%" r="80%"><stop stop-color="#d0df9b"/><stop offset=".42" stop-color="#b0c47f"/><stop offset=".8" stop-color="#91ab62"/><stop offset="1" stop-color="#6e8e4e"/></radialGradient><linearGradient id="leaf" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#345339"/><stop offset="1" stop-color="#70905a"/></linearGradient><filter id="texture"><feTurbulence type="fractalNoise" baseFrequency=".65" numOctaves="3" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".11"/></feComponentTransfer><feBlend in="SourceGraphic" mode="soft-light"/></filter><clipPath id="pear-clip"><path d="M197 103C136 101 148 186 109 234C45 313 71 417 187 426C313 436 358 348 305 264C258 189 273 106 197 103Z"/></clipPath></defs>
+          <path d="M198 116Q185 83 201 60" stroke="#5b4f35" stroke-width="11" stroke-linecap="round" fill="none"/>
+          <path d="M201 88C201 42 244 32 276 41C266 82 232 108 201 88Z" fill="url(#leaf)"/>
+          <path d="M208 83L258 50" stroke="#91a671" stroke-width="1.5"/>
+          <path d="M197 103C136 101 148 186 109 234C45 313 71 417 187 426C313 436 358 348 305 264C258 189 273 106 197 103Z" fill="url(#skin)"/>
+          <g clip-path="url(#pear-clip)"><rect x="60" y="100" width="285" height="340" fill="url(#skin)" filter="url(#texture)"/></g>
+          <g class="pear-face" fill="#2e4938"><ellipse class="eye" cx="166" cy="277" rx="5.5" ry="10"/><ellipse class="eye" cx="228" cy="277" rx="5.5" ry="10"/><path d="M185 298Q197 309 210 298" fill="none" stroke="#2e4938" stroke-width="3" stroke-linecap="round"/></g>
+          <ellipse cx="147" cy="300" rx="13" ry="6" fill="#bc9a72" opacity=".35"/><ellipse cx="248" cy="300" rx="13" ry="6" fill="#bc9a72" opacity=".35"/>
+        </svg>
+        <div class="art-message message-douli"><span class="mini-pear" aria-hidden="true">●</span>我在，慢慢说。<span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></div>
+        <div class="art-bottom"><span>01 / HELLO, DOULI</span><button class="motion-toggle" aria-pressed="false">暂停动效 <span aria-hidden="true">Ⅱ</span></button></div>
+      </div>
+    </section>
+    <div class="intro-rail wrap"><span>探索豆梨 <span lang="en">/ Field guide</span></span><div><a href="#experience">01　语音交互</a><i></i><a href="#memory">02　本地记忆</a><i></i><a href="#inside">03　项目实现</a></div><a href="#experience" aria-label="向下探索">↓</a></div>
+
+    <section class="experience section wrap" id="experience" aria-labelledby="experience-title">
+      <div class="section-top"><p class="eyebrow">01 — EVERYDAY MOMENTS</p><span class="margin-note">不用组织好语言，再开始。</span></div>
+      <div class="section-heading"><h2 id="experience-title">生活没有标准提问。<br><span class="soft">随口说，就很好。</span></h2><p>今天的小事，明天的打算，突然冒出来的问题。<br>从电脑麦克风到 ESP32 音箱，让对话发生在手边。</p></div>
+      <div class="experience-layout">
+        <div class="scenario-list" role="group" aria-label="选择对话示例">
+          <button class="scenario active" data-scenario="daily" aria-pressed="true"><span class="scenario-number">01</span><span><strong>聊聊今天</strong><small>分享一件微不足道的小事</small></span><span class="scenario-arrow" aria-hidden="true">↗</span></button>
+          <button class="scenario" data-scenario="remember" aria-pressed="false"><span class="scenario-number">02</span><span><strong>记住我的偏好</strong><small>让下一次对话，多一点了解</small></span><span class="scenario-arrow" aria-hidden="true">↗</span></button>
+          <button class="scenario" data-scenario="pause" aria-pressed="false"><span class="scenario-number">03</span><span><strong>按我的节奏来</strong><small>可以打断，也可以说晚安</small></span><span class="scenario-arrow" aria-hidden="true">↗</span></button>
+        </div>
+        <div class="conversation" aria-live="polite" aria-atomic="true">
+          <div class="conversation-header"><span><img src="./assets/mark.svg" alt="" width="27" height="27">豆梨 <span class="muted">· 陪你聊聊</span></span><span class="demo-label">交互示意</span></div>
+          <div class="conversation-content"><p class="chat-user" id="demo-user">今天下班，绕远路去公园走了一会儿。</p><div class="chat-assistant"><span class="avatar-small" aria-hidden="true">d.</span><p id="demo-reply">把回家的路走慢一点，也挺好。<br>今天的风怎么样？</p></div><div class="demo-memory" id="demo-note"><span aria-hidden="true">↳</span><span>生活记录 · 一次公园散步</span></div></div>
+          <div class="conversation-bottom"><span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span id="demo-status">这一刻，慢慢聊。</span><span class="round-icon" aria-hidden="true">⌁</span></div>
+        </div>
+      </div>
+      <p class="demo-disclaimer">这里是预设示例，不会录音或调用模型。实际回答与自动整理结果取决于模型及设置。</p>
+    </section>
+
+    <section class="memory-section" id="memory" aria-labelledby="memory-title"><div class="wrap memory-layout">
+      <div class="memory-copy"><p class="eyebrow">02 — LITTLE THINGS, KEPT CLOSE</p><h2 id="memory-title">你说过的小事，<br>有迹可循。</h2><p>「记住」不该是一个黑盒。<br>一件经历、一条偏好，都能回到当时的原话。</p><div class="memory-principles"><div><span>01</span><p><strong>你来确认</strong>自动提取的事实先成为建议，由你确认。</p></div><div><span>02</span><p><strong>随时更正</strong>偏好会变，记录可以修订，也可以忘记。</p></div><div><span>03</span><p><strong>留在本地</strong>数据库保存在后台所在的设备上。</p></div></div><a class="text-link light-link" href="https://github.com/Syfyivan/douli-esp32/blob/main/docs/MEMORY.md">了解豆梨的记忆方式 <span aria-hidden="true">↗</span></a></div>
+      <div class="memory-visual"><span class="handwritten">little things matter.</span><div class="paper paper-back"></div><article class="paper memory-paper"><div class="paper-top"><span>DOULI / 生活手记</span><span aria-hidden="true">✳</span></div><p class="paper-date">某个平常的傍晚</p><h3>把今天，记下来。</h3><div class="record-line"><span class="record-dot"></span><div><span class="record-tag">生活经历 · 运动</span><p>下班后去公园散步。</p></div></div><blockquote>“今天下班，绕远路去公园走了一会儿。”</blockquote><button class="source-toggle" aria-expanded="false" aria-controls="source-detail">展开原话来源 <span aria-hidden="true">↗</span></button><div class="source-detail" id="source-detail" hidden><p>来源：与豆梨的对话</p><p>这是一条虚构展示记录。实际应用可以打开原对话，核对来源并修订整理内容。</p></div><div class="paper-foot"><span>原话与整理，分别保留</span><span>↗</span></div></article><div class="privacy-note"><span aria-hidden="true">⌂</span><p>本地存储 ≠ 离线推理。<br>使用模型时，必要输入与上下文会发送给所配置的服务。</p></div></div>
+    </div></section>
+
+    <section class="inside section wrap" id="inside" aria-labelledby="inside-title"><div class="section-top"><p class="eyebrow">03 — A LOOK INSIDE</p><span class="margin-note">温暖的交互，清楚的实现。</span></div><div class="section-heading"><h2 id="inside-title">一个小伙伴。<br><span class="soft">几个认真打磨的部分。</span></h2><p>豆梨是一个持续迭代的个人项目。<br>从声音到记忆，从软件到设备，每一步都有实现。</p></div>
+      <div class="system-diagram" aria-label="架构：电脑和 ESP32 连接本地豆梨后台，后台连接本地记忆与所配置的模型服务"><div class="system-input"><div><span class="system-symbol" aria-hidden="true">▱</span><strong>电脑</strong><span>浏览器 / Windows</span></div><div><span class="system-symbol" aria-hidden="true">◉</span><strong>ESP32</strong><span>语音终端</span></div></div><div class="system-wire" aria-hidden="true"><span></span><b>↔</b></div><div class="system-core"><img src="./assets/mark.svg" alt="" width="48" height="48"><strong>豆梨后台</strong><span>对话 · 记忆 · 工具调度</span><small>运行在你的设备上</small></div><div class="system-wire" aria-hidden="true"><span></span><b>↔</b></div><div class="system-output"><div><span class="connection-dot"></span><strong>本地数据库</strong><span>聊天 / 偏好 / 生活记录</span></div><div><span class="connection-dot external"></span><strong>你配置的模型</strong><span>对话 / 识别 / 合成</span></div></div></div>
+      <div class="engineering-list"><a href="https://github.com/Syfyivan/douli-esp32/blob/main/docs/VOICE_UPGRADE.md"><span class="engineering-num">01 / VOICE</span><h3>对话跟得上，打断停得下。</h3><p>流式响应、分段播放与取消机制；旧任务的晚到结果不会接着抢话。</p><span aria-hidden="true">↗</span></a><a href="https://github.com/Syfyivan/douli-esp32/blob/main/docs/LIFE_RECORDS.md"><span class="engineering-num">02 / MEMORY</span><h3>更正一处，相关记忆也更新。</h3><p>原话、经历、摘要和索引关联维护，避免改过的旧内容再次被记起。</p><span aria-hidden="true">↗</span></a><a href="https://github.com/Syfyivan/douli-esp32/blob/main/docs/AI_GUIDE.md"><span class="engineering-num">03 / AGENT</span><h3>把任务交出去，也跟踪结果。</h3><p>通过 Orca CLI 对接外部 Codex Agent；区分任务提交、本轮返回与实际完成。</p><span aria-hidden="true">↗</span></a></div>
+      <details class="field-note"><summary><span class="case-label">FIELD NOTE / 真机手记</span><strong>后台明明在发，音箱为什么还会卡？</strong><span aria-hidden="true">+</span></summary><p>用相同的 422 包音频对照，板端在这次公网测试中最长 3.379 秒没收到下一包，随后突发到包导致解码队列溢出。换到局域网，422 包全部收到并解码，最长间隔 38 毫秒。豆梨因此优先选择局域网，同时保留加密公网备用。这是一次特定板型与网络的实测。<a href="https://github.com/Syfyivan/douli-esp32/blob/main/docs/FIRMWARE.md">读实验记录 ↗</a></p></details>
+      <div class="project-note"><span class="status-dot"></span><p>Windows、指定 ESP32 板型与 Android 有分版本验证记录；硬件收音、模型效果和跨设备体验仍需按环境验收。<a href="https://github.com/Syfyivan/douli-esp32#已验证到什么程度">查看验证范围 ↗</a></p></div>
+    </section>
+
+    <section class="start-section" id="start" aria-labelledby="start-title"><div class="wrap start-layout"><div><p class="eyebrow">04 — MAKE ROOM FOR DOULI</p><h2 id="start-title">给豆梨，<br>留个位置。</h2><p>不必先买一块开发板。<br>从电脑上的第一句对话开始。</p><a class="button button-dark" href="https://github.com/Syfyivan/douli-esp32">前往 GitHub <span aria-hidden="true">↗</span></a></div><div class="start-right"><div class="terminal"><div class="terminal-head"><span><i></i><i></i><i></i></span><span>START LOCAL</span><button class="copy-code" aria-label="复制安装命令">复制命令 <span aria-hidden="true">⧉</span></button></div><pre><code id="install-code">git clone https://github.com/Syfyivan/douli-esp32.git
+cd douli-esp32
+npm ci
+npm run build
+npm start</code></pre><div class="terminal-foot"><span class="status-dot"></span>打开 127.0.0.1:8788，配置模型后开始聊天。</div></div><p class="start-requirement">需要 Node.js 22.13+、npm 与可用的模型服务。模型调用可能产生费用。</p><div class="guide-links"><a href="https://github.com/Syfyivan/douli-esp32#从零跑起来"><span>我想自己试试</span><strong>阅读上手指南 <span aria-hidden="true">↗</span></strong></a><a href="https://github.com/Syfyivan/douli-esp32/blob/main/docs/AI_GUIDE.md"><span>我想让 AI 帮忙</span><strong>把接手指南交给它 <span aria-hidden="true">↗</span></strong></a></div><p id="copy-status" class="copy-status" role="status"></p></div></div></section>
+
+    <section class="faq section wrap" aria-labelledby="faq-title"><div><p class="eyebrow">A FEW THINGS TO KNOW</p><h2 id="faq-title">见面之前，<br>你可能想知道。</h2></div><div class="faq-items"><details><summary>这是一个现成售卖的音箱吗？<span aria-hidden="true">+</span></summary><p>豆梨目前是公开代码的个人项目，不销售硬件。你可以先在电脑上运行；ESP32 需要准备兼容板型、固件和模型服务。网页上的小梨是品牌插画，不是硬件实物。</p></details><details><summary>本地运行，是完全离线吗？<span aria-hidden="true">+</span></summary><p>不是。聊天和记忆保存在本地，但对话、识别、合成等依赖你配置的模型服务。需要的音频和上下文会发给对应服务；普通聊天数据库也不是全库加密。</p></details><details><summary>可以在这个网页直接聊天吗？<span aria-hidden="true">+</span></summary><p>这里是项目展示站，示例都是预设内容。真正的聊天需要在自己的电脑或支持的设备上运行豆梨，并配置模型。官网不会请求麦克风，也不会连接你的私人数据。</p></details><details><summary>我可以更正或删除它记住的东西吗？<span aria-hidden="true">+</span></summary><p>可以。应用支持确认、更正和忘记偏好，也可以修订或移除生活记录。移除整理条目会保留聊天原话；如果也要删除原话，请在原对话中另外操作。</p></details></div></section>
+  </main>
+  <footer class="footer wrap"><div class="footer-top"><a class="brand" href="#top"><img src="./assets/mark.svg" alt="" width="35" height="35"><span>豆梨<span class="wordmark">douli</span></span></a><p>陪伴，从好好听你说话开始。</p><a class="back-top" href="#top" aria-label="回到顶部">↑</a></div><div class="footer-bottom"><span>© 2026 Douli · 个人语音陪伴项目</span><div><a href="https://github.com/Syfyivan/douli-esp32">GitHub ↗</a><a href="https://github.com/Syfyivan/douli-esp32/blob/main/docs/THIRD_PARTY.md">来源与致谢 ↗</a></div><span>MADE FOR EVERYDAY LIFE.</span></div></footer>
+</body>
+</html>

@@ -2,6 +2,7 @@
 
 Read the user's global AGENTS.md from their configured Codex home when present. Follow the user's browser preferences.
 Do not edit README.md without an explicit request. Project specifications are in docs/.
+For local API examples, isolated startup, and code navigation, see docs/AI_GUIDE.md. The public static site lives in site/; its deployment guide is docs/WEBSITE.md.
 Run changed software as an independent background process and verify it after the launching shell exits.
 Do not claim hardware, model quality, or cross-platform acceptance from mock tests.
 Never commit local data, audio, API keys, or pairing credentials. Preserve third-party notices.
