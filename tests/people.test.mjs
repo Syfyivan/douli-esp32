@@ -168,8 +168,9 @@ test("shared speaker answers unknown speakers without personal context, tools or
   t.mock.method(connection, "requestVision", () => { throw new Error("Unknown speaker must not request a camera frame"); });
   const calls = [];
   for (const person of [a, b]) app.people.bundle(person.id).engine.run = async input => {
-    calls.push({ id: person.id, input });
     const store = app.people.bundle(person.id).store;
+    const history = store.messages(input.sessionId).map(message => message.text);
+    calls.push({ id: person.id, input, history });
     const message = store.message(input.sessionId, "user", input.text);
     input.emit({ type: "done", message }); return { farewell: false };
   };
@@ -180,9 +181,12 @@ test("shared speaker answers unknown speakers without personal context, tools or
     await connection.process(null, person.name + "的偏好", null, { status: "matched", method: "voiceprint", personId: person.id });
     await connection.process(null, "unknown-after-" + person.id, null, { status: "unknown" });
   }
+  await connection.process(null, "我刚才说了什么", null, { status: "matched", method: "voiceprint", personId: a.id });
   await connection.process(null, "unknown-private-utterance", null, { status: "unknown" });
-  assert.deepEqual(calls.map(c => c.id), [a.id, b.id]);
+  assert.deepEqual(calls.map(c => c.id), [a.id, b.id, a.id]);
+  assert.deepEqual(calls.map(c => c.history), [[], [], [a.name + "的偏好"]]);
   assert.notEqual(calls[0].input.sessionId, calls[1].input.sessionId);
+  assert.equal(calls[0].input.sessionId, calls[2].input.sessionId);
   assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM messages").get().n, 0);
   for (const person of [a, b]) assert.ok(!JSON.stringify(app.people.bundle(person.id).store.sessions()).includes("unknown-private"));
   assert.ok(sent.some(e => e.type === "speaker" && e.status === "unknown"));
@@ -197,7 +201,7 @@ test("shared speaker answers unknown speakers without personal context, tools or
   const replyCount = spoken.length;
   for (let i = 0; i < 3; i++) await connection.process(null, "more unknown input", null, { status: "unknown" });
   assert.equal(spoken.length, replyCount + 3, "guest conversation remains available throughout the wake session");
-  assert.equal(calls.length, 2, "guest replies never reach another person's engine");
+  assert.equal(calls.length, 3, "guest replies never reach another person's engine");
   t.mock.method(app.gateway.greetingAudio, "source", () => ({ audio: [], cacheHit: true }));
   await connection.greet();
   await connection.process(null, "unknown after next wake", null, { status: "unknown" });
@@ -220,7 +224,8 @@ test("shared speaker answers unknown speakers without personal context, tools or
   assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM messages").get().n, 0);
   for (const person of [a, b]) {
     const personal = app.people.bundle(person.id).store;
-    assert.deepEqual(personal.db.prepare("SELECT text FROM messages").all().map(m => m.text), [person.name + "的偏好"]);
+    const history = personal.messages(calls.find(call => call.id === person.id).input.sessionId);
+    assert.deepEqual(history.map(m => m.text), person.id === a.id ? [a.name + "的偏好", "我刚才说了什么"] : [b.name + "的偏好"]);
     assert.equal(personal.db.prepare("SELECT count(*) AS n FROM memories").get().n, 0);
   }
 });
