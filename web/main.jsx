@@ -45,7 +45,7 @@ import { MemoryPage } from "./memory.jsx";
 import { HealthPage, EvidenceCards } from "./health.jsx";
 import { SyncPanel } from "./sync.jsx";
 import { BackendSelection } from "./backend-selection.jsx";
-import { UI_STORAGE_KEY, normalizeUiPreferences, readUiPreferences, conversationSource, inDateRange } from "./ui-state.mjs";
+import { UI_STORAGE_KEY, normalizeUiPreferences, readUiPreferences, conversationSource, inDateRange, speakerResultLabel } from "./ui-state.mjs";
 import "./desktop-ui.css";
 
 const names = {
@@ -1580,6 +1580,12 @@ function Devices({ state, act, notify, reload }) {
               <p className="small muted">
                 {d.id} · 固件 {d.firmware || "未知"} · {d.tools.length} 个工具
               </p>
+              {d.connection?.lastSpeaker && (
+                <p className="small">
+                  最近一次声纹判定：{speakerResultLabel(d.connection.lastSpeaker)}
+                  {" · "}<time dateTime={d.connection.lastSpeaker.at}>{time(d.connection.lastSpeaker.at)}</time>
+                </p>
+              )}
               {d.activationCode && (
                 <p>
                   设备配对码：<strong>{d.activationCode}</strong>
