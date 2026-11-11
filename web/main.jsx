@@ -1518,10 +1518,9 @@ function Devices({ state, act, notify, reload }) {
         <h1>把陪伴放到床边</h1>
         <p>让 ESP32 连接这台{state.platform === "android" ? "手机" : "电脑"}，为你提供语音陪伴。</p>
       </div>
-      <SyncPanel {...{ api, Section, Button, Field }} />
       <Section
         title="我的 ESP32"
-        subtitle="开启五分钟配对窗口，把下方 OTA 地址配置到小智兼容固件中，再确认出现的设备。"
+        subtitle="让板子和后台连到同一局域网。点击「添加设备」，把对应 Wi-Fi 或有线网卡的 OTA 地址填入板子，再核对它播报或显示的配对码。"
         action={
           <Button
             primary
@@ -1540,17 +1539,22 @@ function Devices({ state, act, notify, reload }) {
         {state.pairingUntil > Date.now() && (
           <div className="notice">配对窗口已开启，等待设备连接。</div>
         )}
+        {!state.gatewayAddresses.length && <p className="notice">尚未找到局域网地址。请将这台{state.platform === "android" ? "手机连到板子使用的 Wi-Fi" : "电脑通过 Wi-Fi 或网线连到板子所在的网络"}，地址列表会自动刷新。</p>}
         <div className="address-list">
           {state.gatewayAddresses.map((url) => (
             <div key={url}>
-              <code>{url}</code>
+              <div className="gateway-address">
+                {state.gatewayInterfaceNames?.[url] && <strong>{state.gatewayInterfaceNames[url]}</strong>}
+                <code>{url}</code>
+              </div>
               <Button
-                onClick={() =>
-                  navigator.clipboard
-                    .writeText(url)
-                    .then(() => notify("地址已复制"))
-                    .catch(() => notify("请手动复制地址", true))
-                }
+                aria-label={`复制 OTA 地址 ${url}`}
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    notify("地址已复制");
+                  } catch { notify("请选中地址并手动复制", true); }
+                }}
               >
                 复制
               </Button>
@@ -1561,7 +1565,7 @@ function Devices({ state, act, notify, reload }) {
           <Empty>
             <Radio size={26} />
             <p>还没有连接的 ESP32</p>
-            <small>电脑试聊不需要等待设备到货。</small>
+            <small>板子联网并请求此处的 OTA 地址后，会出现在列表里。</small>
           </Empty>
         ) : (
           state.devices.map((d) => (
@@ -1701,6 +1705,7 @@ function Devices({ state, act, notify, reload }) {
           ))
         )}
       </Section>
+      <SyncPanel {...{ api, Section, Button, Field }} />
       <Section
         title="家居动作"
         subtitle="开灯和关灯分别登记，助手才知道该按哪个方向。设备收到指令与灯确实改变状态会分开显示。"

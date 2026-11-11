@@ -884,6 +884,12 @@ header {
   margin-bottom: 8px;
   gap: 10px;
 }
+.gateway-address {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .address-list code {
   font-size: 11px;
   overflow-wrap: anywhere;

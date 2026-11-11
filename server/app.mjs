@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import staticFiles from "@fastify/static";
 import { randomUUID } from "node:crypto";
 import { networkInterfaces } from "node:os";
+import { isIPv4 } from "node:net";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Store } from "./store.mjs";
@@ -150,8 +151,7 @@ export async function createApplication({
       .all("rules")
       .map((r) => ({ ...r, config: JSON.parse(r.config) })),
     pairingUntil: gateway.pairingUntil,
-    gatewayAddresses: localAddresses(store.directory)
-      .map((address) => `http://${address}:${gatewayPort}/xiaozhi/ota/`),
+    ...gatewayAddressState(directory, gatewayPort),
     platform: process.env.DOULI_MOBILE === "1" ? "android" : "desktop",
     configured: Object.fromEntries(
       Object.entries(store.settings().models).map(([k, v]) => [
@@ -603,11 +603,27 @@ export async function createApplication({
   };
 }
 
-export function localAddresses(directory) {
+function localInterfaces(directory) {
   if (process.env.DOULI_MOBILE === "1") {
-    try { return JSON.parse(readFileSync(resolve(directory, "network.json"), "utf8")); }
+    try {
+      const addresses = JSON.parse(readFileSync(resolve(directory, "network.json"), "utf8"));
+      if (!Array.isArray(addresses)) return [];
+      return addresses.filter(address => typeof address === "string" && isIPv4(address))
+        .map(address => ({ address, name: "Wi-Fi" }));
+    }
     catch { return []; }
   }
-  return Object.values(networkInterfaces()).flat()
-    .filter((n) => n?.family === "IPv4" && !n.internal).map((n) => n.address);
+  return Object.entries(networkInterfaces()).flatMap(([name, entries]) =>
+    (entries || []).filter(entry => entry.family === "IPv4" && !entry.internal)
+      .map(({ address }) => ({ address, name })));
+}
+
+export function localAddresses(directory) {
+  return localInterfaces(directory).map(entry => entry.address);
+}
+
+function gatewayAddressState(directory, port) {
+  const gatewayInterfaceNames = Object.fromEntries(localInterfaces(directory)
+    .map(({ address, name }) => [`http://${address}:${port}/xiaozhi/ota/`, name]));
+  return { gatewayAddresses: Object.keys(gatewayInterfaceNames), gatewayInterfaceNames };
 }
