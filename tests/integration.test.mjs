@@ -42,6 +42,8 @@ async function setup(t, options = {}) {
     } else if (req.url === "/v1/chat/completions") {
       const body = JSON.parse(raw.toString());
       received.push(body);
+      if (options.mediationResult && !body.stream)
+        return res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(options.mediationResult) } }] }));
       if (!body.stream && body.messages[0]?.content.includes("健康信息助手"))
         return res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ spoken: "我在这里，慢慢说就好。", explanation: "此处为协议测试，未核查医学资料。", nextSteps: [], questions: [], urgency: "uncertain", citations: [] }) } }] }));
       if (!body.stream)
@@ -284,6 +286,50 @@ test("approved ESP32 handshake → Opus ASR → chat → playable Opus; reconnec
   again.close();
   await once(again, "close");
 });
+test("paired ESP32 can mediate over Opus without logging statements or entering personal chat", async t => {
+  const options = { speechMs: 20, mediationResult: { kind: "verdict", text: "双方都确认已经改期。" } };
+  const { app, received, asrCalls } = await setup(t, options);
+  app.store.saveSettings(mergeSettings(app.store.settings(), { privacy: { autoMemory: true, saveAudio: true } }));
+  const id = "mediation-device";
+  app.gateway.pair();
+  app.gateway.ota({ headers: { "device-id": id, host: "127.0.0.1" }, body: {} }, 8789);
+  app.store.db.prepare("UPDATE devices SET approved=1 WHERE id=?").run(id);
+  const { token } = app.store.db.prepare("SELECT token FROM devices WHERE id=?").get(id);
+  const ws = new WebSocket(`ws://127.0.0.1:${app.device.server.address().port}/xiaozhi/v1/`, {
+    headers: { "Device-Id": id, Authorization: `Bearer ${token}` },
+  });
+  const out = observe(ws);
+  await once(ws, "open");
+  ws.send(JSON.stringify({ type: "hello", version: 3, audio_params: { format: "opus", channels: 1, sample_rate: 16000 } }));
+  await out.wait(m => m.some(e => e.type === "hello"));
+  const pcm = Buffer.alloc(640);
+  for (let i = 0; i < 320; i++) pcm.writeInt16LE(Math.round(Math.sin(i / 4) * 12000), i * 2);
+  const encoder = codec();
+  try {
+    for (const line of ["帮我们评评理", "第一位同意", "第二位同意", "我记错了", "我同意改期", "第一位确认", "我们改到八点", "第二位确认", "请评理", "结束评理"]) {
+      options.asrText = line;
+      const start = out.messages.length;
+      ws.send(JSON.stringify({ type: "listen", state: "start", mode: "manual" }));
+      for (let i = 0; i < 16; ++i) ws.send(packAudio(Buffer.from(encoder.encode(pcm, 320)), 3));
+      ws.send(JSON.stringify({ type: "listen", state: "stop" }));
+      await out.wait(m => m.slice(start).some(e => e.type === "tts" && e.state === "stop" && !e.interrupted));
+      assert.ok(out.messages.slice(start).some(e => e.type === "stt" && e.text === line));
+      if (line === "第二位确认") assert.equal(received.length, 0);
+    }
+    assert.equal(asrCalls(), 10);
+    assert.equal(received.length, 1);
+    assert.deepEqual(JSON.parse(received[0].messages[1].content).statements, { A: "我同意改期", B: "我们改到八点" });
+    assert.ok(out.messages.some(e => e.type === "tts" && e.text?.includes("双方都确认已经改期")));
+    assert.ok(out.binary.length > 0);
+    assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM messages").get().n, 0);
+    assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get().n, 0);
+    assert.equal(app.store.all("memories").length, 0);
+    assert.equal(app.gateway.connections.get(id).mediation.active, false);
+  } finally {
+    encoder.delete(); ws.close(); await once(ws, "close");
+  }
+});
+
 test("unapproved device and cross-site browser WebSockets are rejected", async (t) => {
   const { app } = await setup(t);
   for (const [port, path, headers, expected] of [

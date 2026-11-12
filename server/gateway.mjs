@@ -29,6 +29,7 @@ import { RealtimeVoice } from "./realtime-voice.mjs";
 import { StreamingPlayback } from "./streaming-playback.mjs";
 import { GreetingAudio } from "./greeting-audio.mjs";
 import { guestReply } from "./guest-chat.mjs";
+import { Mediation, requestsMediation } from "./mediation.mjs";
 import { AudioPacer } from "./audio-pacer.mjs";
 import { audibleContext } from "./voice-state.mjs";
 
@@ -328,6 +329,7 @@ export class VoiceConnection {
     this.bargeIn = new BargeInBuffer();
     this.speechDetector = new SpeechDetector();
     this.turnDetector = new TurnDetector(this.store.settings());
+    this.mediation = new Mediation();
     this.bargeInCount = 0;
     this.lastBargeInAt = null;
     this.decoder = codec();
@@ -381,6 +383,7 @@ export class VoiceConnection {
     });
     socket.on("error", () => this.close());
     socket.on("close", () => {
+      this.clearMediation();
       this.saveConversation();
       this.realtime?.close();
       clearInterval(this.timer);
@@ -622,7 +625,14 @@ export class VoiceConnection {
     this.sessionPersisted = true;
     this.conversationStarted = true;
   }
+  clearMediation() {
+    this.mediation.reset();
+    for (const turn of this.turns.values()) {
+      if (turn.mediation) for (const segment of turn.segments) segment.text = "";
+    }
+  }
   finishConversation() {
+    this.clearMediation();
     this.conversationEnded = true;
     this.saveConversation();
     this.realtime?.close(); this.realtime = null;
@@ -997,7 +1007,7 @@ export class VoiceConnection {
       this.lastConversationActivity = Date.now();
     }
     if (voiced) this.turnDetector.speech();
-    else this.turnDetector.observeSilence(this.buffer.silenceMs);
+    else if (!this.mediation.active) this.turnDetector.observeSilence(this.buffer.silenceMs);
     const finished = this.buffer.push(pcm, this.mode !== "manual", voiced, this.turnDetector.threshold());
     this.call.update({ input: this.buffer.started ? "recognizing" : "listening" });
     if (!this.live && (this.buffer.started || finished)) {
@@ -1032,6 +1042,7 @@ export class VoiceConnection {
     }
   }
   async startRealtime() {
+    if (this.mediation.active) return;
     if (this.gateway.people?.active() && !this.options.browser) {
       this.send({ type: "voice_mode", mode: "cascade", reason: "多人档案使用逐句声纹识别" }); return;
     }
@@ -1068,6 +1079,7 @@ export class VoiceConnection {
     }
   }
   asrContext() {
+    if (this.mediation.active) return "";
     return this.gateway.people?.active() && !this.options.browser
       ? this.gateway.people.voiceContext() : this.engine.context(this.session.id);
   }
@@ -1171,9 +1183,20 @@ export class VoiceConnection {
         return;
       }
       this.lastConversationActivity = Date.now();
-      const addressed = correctAssistantAddress(text, this.store.settings());
+      const addressed = this.mediation.active ? text.trim() : correctAssistantAddress(text, this.store.settings());
+      turn.mediation = this.mediation.active || requestsMediation(addressed, this.store.settings().assistant.name);
       let turnEngine = this.engine, turnStore = this.store, sessionId = this.session.id;
-      if (this.gateway.people?.active() && !this.options.browser) {
+      let mediationReply;
+      if (turn.mediation) {
+        // Case audio uses the ordinary ASR/TTS path, never the realtime session
+        // seeded with private history. Discard old callbacks before collecting statements.
+        if (remote) { this.realtime = null; remote.close(); }
+        if (isFarewell(addressed, this.store.settings().assistant.name)) { this.endConversation(); return; }
+        mediationReply = await this.mediation.reply(addressed, this.store.settings(), speaker, signal);
+        if (!active()) return;
+        if (!this.mediation.active) this.clearMediation();
+        if (this.options.browser) this.send({ type: "mediation", active: this.mediation.active });
+      } else if (this.gateway.people?.active() && !this.options.browser) {
         const bundle = this.gateway.people.voiceBundle(speaker);
         // Keep only the last attribution in RAM: no transcript, raw audio or
         // provider voice identifiers are needed to diagnose an unknown turn.
@@ -1191,7 +1214,7 @@ export class VoiceConnection {
           this.send({ type: "speaker", status: "matched", personId: bundle.person.id, name: bundle.person.name });
         }
       }
-      if (!turn.guest) {
+      if (!turn.guest && !turn.mediation) {
         turn.personalStore = turnStore;
         this.ensureSession();
         this.saveConversation();
@@ -1210,8 +1233,8 @@ export class VoiceConnection {
       }
       // Start independently of replying and TTS, so normal first audio does not
       // wait for this short classification. Guest input stays stateless.
-      endIntent = conversationEndIntent(this.store.settings(), addressed, signal);
-      const visual = turn.guest ? null : await this.requestVision(turn, signal);
+      if (!turn.mediation) endIntent = conversationEndIntent(this.store.settings(), addressed, signal);
+      const visual = turn.guest || turn.mediation ? null : await this.requestVision(turn, signal);
       if (!active()) return;
       const speechSettings = this.store.settings();
       if (speechSettings.input.ttsProvider === "volcengine" && !remoteTurn) {
@@ -1263,7 +1286,7 @@ export class VoiceConnection {
         if (event.type === "delta") {
           this.mark(turn, "firstTextMs", Date.now() - turn.lastSpeechAt);
           if (!nativeUsed) {
-            remote?.cancel(remoteTurn);
+            if (!turn.mediation) remote?.cancel(remoteTurn);
             if (streamingSpeech) {
               streamingText += event.text;
               streamingStartedAt ??= Date.now();
@@ -1273,7 +1296,11 @@ export class VoiceConnection {
           }
         }
       };
-      const result = turn.guest
+      let result;
+      if (turn.mediation) {
+        emit({ type: "delta", text: mediationReply });
+        result = { farewell: false };
+      } else result = turn.guest
         ? await guestReply(this.store.settings(), addressed, signal, emit)
         : await turnEngine.run({
         sessionId,
@@ -1304,11 +1331,12 @@ export class VoiceConnection {
         turn.interrupted = true;
         this.savePlayback(turn);
         this.error(
-          new Error("文字已生成，但语音播放失败：" + speechError.message),
+          new Error(turn.mediation ? "评理语音播放失败，请检查合成服务后重听。" : "文字已生成，但语音播放失败：" + speechError.message),
         );
       }
       if (active()) {
         this.send({ type: "tts", state: "stop", ...(speechError ? { interrupted: true } : {}) });
+        if (turn.mediation && this.options.browser) this.send({ type: "done", mediation: true });
         if (speechError || !turn.acknowledged || turn.segments.every(s => s.finished && s.playedMs >= s.durationMs))
           this.state = turn.farewell ? "idle" : "listening";
         this.startedAt = Date.now();
@@ -1330,7 +1358,7 @@ export class VoiceConnection {
           generation === this.generation &&
           this.ws.readyState === WebSocket.OPEN
         ) {
-          this.error(e);
+          this.error(turn.mediation || this.mediation.active ? new Error("评理语音服务暂不可用，请重试。") : e);
           this.send({ type: "tts", state: "stop", interrupted: true });
           if (turn.farewell) this.endConversation();
           else this.state = "listening";
@@ -1340,7 +1368,7 @@ export class VoiceConnection {
     } finally {
       segments.close();
       live?.close();
-      if (!turn.guest && remoteTurn && remote && !this.store.closed) {
+      if (!turn.guest && !turn.mediation && remoteTurn && remote && !this.store.closed) {
         // Cloud context must follow what was actually heard. Health details and
         // memory/settings operation transcripts are never seeded as chat history.
         turn.remoteContext = { remote, remoteTurn, text };
