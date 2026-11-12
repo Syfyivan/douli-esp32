@@ -347,6 +347,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
   const [voiceFlags, setVoiceFlags] = useState({}), [captions, setCaptions] = useState(() => localStorage.getItem("douli.captions") !== "off"), [spokenCaption, setSpokenCaption] = useState("");
   const voiceTurn = useRef(0);
   const [voiceModeLabel, setVoiceModeLabel] = useState("");
+  const [mediating, setMediating] = useState(false);
   const [avatarStatus, setAvatarStatus] = useState("off");
   const [avatarVolume, setAvatarVolume] = useState(() => {
     try { return normalizeAvatarVolume(localStorage.getItem("douli.avatarVolume")); } catch { return 2; }
@@ -423,6 +424,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     if (e.type === "tool" && e.name === "web_search") setSearchProgress("");
     if (["user", "done", "aborted", "error"].includes(e.type)) setSearchProgress("");
     if (e.type === "voice_mode") setVoiceModeLabel(e.reason);
+    if (e.type === "mediation") setMediating(e.active);
     if (e.type === "native_screen") { setVisualSource(old => e.active ? "screen" : old === "screen" ? "" : old); setVisionStatus(old => e.active ? "正在共享手机屏幕，每轮提问发送一帧给画面理解模型" : old.startsWith("正在共享手机屏幕") ? "" : old); }
     if (e.type === "vision_request") visual.current?.respond(e);
     if (e.type === "vision_status") setVisionStatus(e.message);
@@ -464,6 +466,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
       setPending(delta.current);
     }
     if (e.type === "done") {
+      if (e.mediation) setPartial("");
       if (e.message) append(e.message);
       delta.current = "";
       setPending("");
@@ -485,6 +488,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     }
   };
   const stop = () => {
+    setMediating(false);
     visual.current?.stop();
     controller.current?.abort();
     voice.current?.stop();
@@ -616,6 +620,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
       notify("请先在设置 → 实时形象中保存 Simli 密钥和形象", true); openSettings("avatar"); return;
     }
     setVoiceState("connecting");
+    setMediating(false);
     setVoiceFlags({});
     voiceTurn.current = 0;
     const Client = withAvatar ? AvatarVoice : window.douliNativeVoice && !selectedPerson() ? NativeVoice : BrowserVoice;
@@ -774,6 +779,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
               </Button>
             </div>
             <div className="call-controls">
+              {!voice.current?.native && <Button disabled={voiceState === "connecting" || voiceFlags.paused} onClick={() => voice.current?.send({ type: "text", text: mediating ? "结束评理" : "帮我们评评理" })}>{mediating ? "结束评理" : "两人评理"}</Button>}
               <Button icon={voiceFlags.muted ? MicOff : Mic} onClick={() => voice.current?.control("mute", !voiceFlags.muted)}>{voiceFlags.muted ? "开启麦克风" : "麦克风静音"}</Button>
               <Button onClick={() => voice.current?.control(voiceFlags.playbackPaused ? "playback_resume" : "playback_pause")}>{voiceFlags.playbackPaused ? "继续播放" : "暂停播放"}</Button>
               <Button onClick={() => voice.current?.control(voiceFlags.paused ? "resume" : "pause")}>{voiceFlags.paused ? "继续通话" : "暂停通话"}</Button>
