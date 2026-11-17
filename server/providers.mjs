@@ -235,6 +235,7 @@ export class LiveTranscriber {
     this.onPartial = onPartial;
     this.frames = [];
     this.pending = [];
+    this.pendingBytes = 0;
     this.closed = false;
     this.bytes = 0;
     this.speechBytes = 0;
@@ -288,12 +289,12 @@ export class LiveTranscriber {
     this.frames.push(pcm);
     this.bytes += pcm.length;
     if (speech) this.speechBytes = this.bytes;
-    this.pending.push(pcm);
-    if (
-      this.pending.reduce((s, b) => s + b.length, 0) >=
-      Math.min(this.settings.input.chunkMs, 200) * 32
-    )
-      this.flush();
+    if (this.socket) {
+      this.pending.push(pcm);
+      this.pendingBytes += pcm.length;
+      if (this.pendingBytes >= Math.min(this.settings.input.chunkMs, 200) * 32)
+        this.flush();
+    }
     if (!this.socket && this.settings.input.previewMs && !this.previewControl &&
         this.speechBytes > (this.previewResult?.speechBytes || 0) &&
         Date.now() - this.lastPreviewAt >= this.settings.input.previewMs) this.preview();
@@ -313,6 +314,7 @@ export class LiveTranscriber {
     if (this.socket?.readyState === WebSocket.OPEN && this.pending.length) {
       this.socket.send(Buffer.concat(this.pending));
       this.pending = [];
+      this.pendingBytes = 0;
     }
   }
   async finish(signal) {
@@ -379,6 +381,7 @@ export class LiveTranscriber {
     this.closed = true;
     this.previewControl?.abort();
     this.pending = [];
+    this.pendingBytes = 0;
     this.frames = [];
     if (this.socket?.readyState === WebSocket.CONNECTING)
       this.socket.terminate();

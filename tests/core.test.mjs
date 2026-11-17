@@ -110,6 +110,12 @@ test("settings survive restart, secrets are encrypted and blank public output is
   store.close();
   const reopened = new Store(dir);
   assert.equal(reopened.settings().models.daily.apiKey, "secret-test-key");
+  const mutated = reopened.settings();
+  mutated.assistant.name = "临时修改不入库";
+  assert.equal(reopened.settings().assistant.name, "豆梨", "cached settings must stay isolated from caller mutation");
+  reopened.db.prepare("UPDATE settings SET value=? WHERE id='config'")
+    .run(reopened.seal(mergeSettings(defaults, { assistant: { name: "同步写入" } })));
+  assert.equal(reopened.settings().assistant.name, "同步写入", "direct SQL ciphertext updates must invalidate settings cache");
   reopened.close();
   assert.throws(() =>
     validateSettings(

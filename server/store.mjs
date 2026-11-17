@@ -43,6 +43,7 @@ export class Store {
       this.db.exec("ALTER TABLE dictionary ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'");
       this.db.prepare("UPDATE dictionary SET scope='assistant_address' WHERE replacement=?").run(this.settings().assistant.name);
     }
+    this.getSettingsStmt = this.db.prepare("SELECT value FROM settings WHERE id=?");
   }
   seal(value) {
     const nonce = randomBytes(12);
@@ -66,15 +67,23 @@ export class Store {
     );
   }
   settings() {
-    const row = this.db
-      .prepare("SELECT value FROM settings WHERE id=?")
-      .get("config");
-    return normalizeSettings(row ? this.unseal(row.value) : {});
+    const stmt = this.getSettingsStmt || (this.getSettingsStmt = this.db.prepare("SELECT value FROM settings WHERE id=?"));
+    const raw = stmt.get("config")?.value || "";
+    if (this.settingsCache?.raw !== raw) {
+      this.settingsCache = {
+        raw,
+        value: normalizeSettings(raw ? this.unseal(raw) : {}),
+      };
+    }
+    return structuredClone(this.settingsCache.value);
   }
   saveSettings(value) {
+    const normalized = normalizeSettings(value);
+    const sealed = this.seal(normalized);
     this.db
       .prepare("INSERT OR REPLACE INTO settings VALUES (?,?)")
-      .run("config", this.seal(normalizeSettings(value)));
+      .run("config", sealed);
+    this.settingsCache = { raw: sealed, value: normalized };
   }
   publicSettings() {
     const s = this.settings();

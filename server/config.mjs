@@ -102,21 +102,21 @@ export const defaults = {
   ),
   search: { enabled: true, provider: "auto", apiKey: "", deepseekApiKey: "" },
 };
+function applySettingsPatch(target, patch) {
+  for (const [key, value] of Object.entries(patch)) {
+    if (["__proto__", "constructor", "prototype"].includes(key) || !(key in target))
+      continue;
+    if (value && typeof value === "object" && !Array.isArray(value) &&
+        target[key] && typeof target[key] === "object" && !Array.isArray(target[key]))
+      applySettingsPatch(target[key], value);
+    else target[key] = structuredClone(value);
+  }
+  return target;
+}
 export function mergeSettings(current, patch) {
   if (!patch || typeof patch !== "object" || Array.isArray(patch))
     return current;
-  const result = structuredClone(current);
-  for (const [key, value] of Object.entries(patch)) {
-    if (
-      ["__proto__", "constructor", "prototype"].includes(key) ||
-      !(key in result)
-    )
-      continue;
-    if (value && typeof value === "object" && !Array.isArray(value))
-      result[key] = mergeSettings(result[key] || {}, value);
-    else result[key] = value;
-  }
-  return result;
+  return applySettingsPatch(structuredClone(current), patch);
 }
 export function normalizeSettings(value) {
   // Loading old backups/settings cannot restore retired routing profiles or thinking.

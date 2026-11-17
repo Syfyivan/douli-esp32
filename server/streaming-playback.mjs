@@ -12,14 +12,15 @@ export class StreamingPlayback {
   }
   async push(bytes, final = false) {
     const c = this.connection, s = this.segment;
-    this.pending = Buffer.concat([this.pending, this.converter.push(bytes, final)]);
+    const resampled = this.converter.push(bytes, final);
+    this.pending = this.pending.length ? (resampled.length ? Buffer.concat([this.pending, resampled]) : this.pending) : resampled;
+    const { pcmGain: gain, playbackGain } = c.outputVolume();
     while (this.pending.length >= 640 || (final && this.pending.length)) {
       const pacer = await c.paceOutput(this.turn, this.signal);
       if (!this.active()) return;
       if (c.call.holdingPlayback) continue;
       const frame = Buffer.alloc(640);
       this.pending.copy(frame, 0, 0, 640); this.pending = this.pending.subarray(Math.min(640, this.pending.length));
-      const { pcmGain: gain, playbackGain } = c.outputVolume();
       if (gain !== 1) for (let i = 0; i < frame.length; i += 2) frame.writeInt16LE(Math.round(frame.readInt16LE(i) * gain), i);
       if (!this.started) {
         this.started = true; c.state = "speaking";
@@ -29,7 +30,7 @@ export class StreamingPlayback {
       }
       s.durationMs += 20;
       if (c.ws.readyState !== 1) return;
-      const data = c.options.browser ? frame : Buffer.from(c.encoder.encode(frame, 320));
+      const data = c.options.browser ? frame : c.encoder.encode(frame, 320);
       c.ws.send(packAudio(data, c.version)); pacer.sent();
       c.recordAudioSent(this.turn, pacer);
     }

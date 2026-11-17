@@ -879,8 +879,8 @@ export class VoiceConnection {
     if (!frame.length || (this.format === "opus" && frame.length > 3828)) throw new Error("无效音频帧");
     const decoded =
       this.format === "pcm"
-        ? Buffer.from(frame)
-        : Buffer.from(this.decoder.decode(frame));
+        ? frame
+        : this.decoder.decode(frame);
     if (decoded.length % 2) throw new Error("无效 PCM 数据");
     const pcm = resample(decoded, this.inputRate);
     // Keep levels and counters in RAM, never microphone audio or transcripts.
@@ -899,8 +899,8 @@ export class VoiceConnection {
       this.realtime.push(pcm);
       return;
     }
-    const input = this.inputSettings();
-    const voiced = input.vad === "energy" ? rms(pcm) >= input.rmsThreshold : this.speechDetector.detect(pcm, input.rmsThreshold);
+    const input = this.buffer.config;
+    const voiced = input.vad === "energy" ? level >= input.rmsThreshold : this.speechDetector.detect(pcm, input.rmsThreshold, level);
     Object.assign(this.inputAudio, { vad: input.vad, threshold: input.rmsThreshold, voiced });
     if (voiced) {
       this.inputAudio.voicedFrames++;
@@ -960,7 +960,8 @@ export class VoiceConnection {
     // playback while classifying it; only a confirmed interruption may stop
     // the sentence. Holding here inserts an ASR-length gap into ordinary speech.
     this.send({ type: "barge", state: "candidate", turn_id: candidate.turnId });
-    for (const frame of frames) this.captureBarge(frame, rms(frame) >= Math.min(this.inputSettings().rmsThreshold, 0.004));
+    const threshold = Math.min(this.buffer.config.rmsThreshold, 0.004);
+    for (const frame of frames) this.captureBarge(frame, rms(frame) >= threshold);
   }
   bargePlayback(candidate) {
     // Only compare with segments that have actually started sending audio.
@@ -1081,7 +1082,7 @@ export class VoiceConnection {
     }
     if (
       Date.now() - this.startedAt >
-      this.store.settings().input.maxRecordingSeconds * 1000
+      input.maxRecordingSeconds * 1000
     ) {
       const rest = this.buffer.finish();
       if (rest) void this.process(rest);
@@ -1479,7 +1480,7 @@ export class VoiceConnection {
     const { pcmGain: gain, playbackGain } = this.outputVolume(settings);
     let pending = Buffer.alloc(0), first = true;
     const sendFrames = async (bytes, final = false) => {
-      pending = Buffer.concat([pending, bytes]);
+      pending = pending.length ? (bytes.length ? Buffer.concat([pending, bytes]) : pending) : bytes;
       while (pending.length >= 640 || (final && pending.length)) {
         const pacer = await this.paceOutput(turn, signal);
         if (!active()) return;
@@ -1499,7 +1500,7 @@ export class VoiceConnection {
         }
         segment.durationMs += 20;
         if (this.ws.readyState !== WebSocket.OPEN) return;
-        const data = this.options.browser ? frame : Buffer.from(this.encoder.encode(frame, 320));
+        const data = this.options.browser ? frame : this.encoder.encode(frame, 320);
         this.ws.send(packAudio(data, this.version));
         pacer.sent();
         this.recordAudioSent(turn, pacer);

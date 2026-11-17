@@ -10,8 +10,8 @@ export class SpeechDetector {
     this.pending = Buffer.alloc(0);
     this.last = false;
   }
-  detect(pcm, threshold = 0.012) {
-    const data = Buffer.concat([this.pending, pcm]);
+  detect(pcm, threshold = 0.012, level = rms(pcm)) {
+    const data = this.pending.length ? Buffer.concat([this.pending, pcm]) : pcm;
     let positive = 0, total = 0, at = 0;
     for (; at + 320 <= data.length; at += 320) {
       // Upstream processFrame copies the whole ArrayBuffer, so use an owned,
@@ -23,10 +23,10 @@ export class SpeechDetector {
       positive += result;
       total++;
     }
-    this.pending = Buffer.from(data.subarray(at));
+    this.pending = at < data.length ? Buffer.from(data.subarray(at)) : Buffer.alloc(0);
     if (total) this.last = positive / total >= 0.5;
     // VAD hangover must not turn literal silence into user activity.
-    return this.last && rms(pcm) >= threshold;
+    return this.last && level >= threshold;
   }
   close() { this.vad?.destroy(); this.vad = null; this.pending = Buffer.alloc(0); }
 }

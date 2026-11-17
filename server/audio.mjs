@@ -44,32 +44,32 @@ export function resample(pcm, from, to = 16000) {
 export class PcmResampler {
   constructor(from, to = 16000) { this.from = from; this.to = to; this.pending = Buffer.alloc(0); this.position = 0; }
   push(bytes, final = false) {
-    const pcm = Buffer.concat([this.pending, bytes]);
+    const pcm = this.pending.length ? (bytes.length ? Buffer.concat([this.pending, bytes]) : this.pending) : bytes;
     const size = Math.floor(pcm.length / 2);
     if (this.from === this.to) {
       this.pending = Buffer.from(pcm.subarray(size * 2));
       if (final && this.pending.length) throw new Error("合成音频包含不完整 PCM 样本");
       return pcm.subarray(0, size * 2);
     }
-    const values = [];
     const step = this.from / this.to;
+    const output = Buffer.allocUnsafe(Math.max(0, Math.ceil((size + 1) / step) * 2));
+    let written = 0;
     while (this.position + (final ? 0 : 1) < size) {
       const left = Math.floor(this.position), part = this.position - left;
       const right = Math.min(left + 1, size - 1);
-      values.push(Math.round(pcm.readInt16LE(left * 2) * (1 - part) + pcm.readInt16LE(right * 2) * part));
+      output.writeInt16LE(Math.round(pcm.readInt16LE(left * 2) * (1 - part) + pcm.readInt16LE(right * 2) * part), written);
+      written += 2;
       this.position += step;
     }
     const consumed = Math.min(Math.floor(this.position), size);
     this.position -= consumed;
     this.pending = Buffer.from(pcm.subarray(consumed * 2));
     if (final && pcm.length % 2) throw new Error("合成音频包含不完整 PCM 样本");
-    const output = Buffer.alloc(values.length * 2);
-    values.forEach((value, i) => output.writeInt16LE(value, i * 2));
-    return output;
+    return output.subarray(0, written);
   }
 }
 export function unpackAudio(data, version = 1) {
-  const b = Buffer.from(data);
+  const b = Buffer.isBuffer(data) ? data : Buffer.from(data);
   if (version === 1) return b;
   if (version === 2) {
     if (
