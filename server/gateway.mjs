@@ -89,13 +89,15 @@ export class Gateway {
             timeout_ms: 30000,
           },
         };
+      if (this.store.db.prepare("SELECT count(*) AS n FROM devices WHERE approved=0").get().n >= 32)
+        throw new Error("待确认设备过多，请先在设备页清理");
       this.store.db
         .prepare("INSERT INTO devices VALUES (?,?,0,?,?,?,?)")
         .run(
           id,
           `ESP32 ${id.slice(-5)}`,
           randomBytes(32).toString("hex"),
-          String(request.body?.application?.version || ""),
+          String(request.body?.application?.version || "").slice(0, 80),
           new Date().toISOString(),
           "{}",
         );
@@ -174,6 +176,7 @@ export class Gateway {
     const wss = new WebSocketServer({ noServer: true, maxPayload: (browser ? 768 : 128) * 1024 });
     this.wsServers.push(wss);
     server.on("upgrade", (request, socket, head) => {
+      socket.on("error", () => socket.destroy());
       let url;
       try {
         url = new URL(request.url, "http://localhost");

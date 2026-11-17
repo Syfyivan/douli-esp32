@@ -50,6 +50,24 @@ test("concurrent personal routes isolate preferences, history, health and downlo
   assert.equal((await request("", `/sessions/${old.id}`)).messages[0].text, "legacy-only");
   assert.ok(!app.people.voiceContext().includes("A-only"));
   assert.equal((await app.admin.inject({ url: "/api/state", headers: { host: "localhost", "x-douli-person": "../" } })).statusCode, 404);
+  const c = app.people.create("家人");
+  app.people.bundles.get(c.id)?.memory.stop();
+  app.people.bundles.get(c.id)?.store.close();
+  app.people.bundles.delete(c.id);
+  assert.equal((await app.admin.inject({ url: `/api/state?person=${c.id}`, headers: { host: "localhost", origin: "https://evil.example" } })).statusCode, 403);
+  assert.equal((await app.admin.inject({ url: "/api/state?person=00000000-0000-0000-0000-000000000000", headers: { host: "localhost", origin: "https://evil.example" } })).statusCode, 403);
+  assert.equal(app.people.bundles.has(c.id), false, "rejected cross-origin request must not open a personal bundle");
+  assert.equal((await app.admin.inject({ url: `/api/medical/export?person=${a.id}`, headers: { host: "localhost", "sec-fetch-site": "cross-site" } })).statusCode, 403);
+  await request("", `/people/${a.id}`, "PUT", { name: "新称呼" });
+  assert.equal(app.people.bundle(a.id).person.name, "新称呼");
+  assert.match(app.people.bundle(a.id).engine.systemPrompt(), /新称呼/);
+  app.gateway.pair();
+  for (let i = 0; i < 32; i++) {
+    const res = await app.device.inject({ method: "POST", url: "/xiaozhi/ota/", headers: { "device-id": `pair-cap-${i}` }, payload: { application: { version: "v".repeat(200) } } });
+    assert.equal(res.statusCode, 200);
+  }
+  assert.equal(app.store.db.prepare("SELECT firmware FROM devices WHERE id='pair-cap-0'").get().firmware.length, 80);
+  assert.equal((await app.device.inject({ method: "POST", url: "/xiaozhi/ota/", headers: { "device-id": "pair-cap-overflow" }, payload: {} })).statusCode, 400);
 });
 
 test("enrollment requires consent, shares only expiring audio, cleans up on failure, and unlinks deleted voices", async t => {

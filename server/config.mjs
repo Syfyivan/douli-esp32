@@ -146,8 +146,18 @@ export function validateSettings(s) {
   for (const key of ["assistant", "input", "privacy", "models", "search", "memory"])
     if (!s[key] || typeof s[key] !== "object" || Array.isArray(s[key]))
       throw new Error("无效的设置分组");
-  if (!s.assistant.night || !Array.isArray(s.assistant.wakeWords))
+  if (typeof s.privacy.saveAudio !== "boolean" || typeof s.privacy.autoMemory !== "boolean")
+    throw new Error("无效的隐私开关");
+  if (typeof s.input.refine !== "boolean" || typeof s.input.streamingToken !== "string" || s.input.streamingToken.length > 512)
+    throw new Error("无效的语音输入设置");
+  if (!s.assistant.night || typeof s.assistant.night.enabled !== "boolean" ||
+      !Array.isArray(s.assistant.wakeWords) || s.assistant.wakeWords.length > 20 ||
+      s.assistant.wakeWords.some(w => typeof w !== "string" || w.length > 50) ||
+      !["persona", "tone", "avoid", "greeting"].every(k => typeof s.assistant[k] === "string" && s.assistant[k].length <= 4000) ||
+      !["简短", "适中", "详细"].includes(s.assistant.replyLength) ||
+      !Number.isFinite(s.assistant.humor) || s.assistant.humor < 0 || s.assistant.humor > 100)
     throw new Error("无效的助手设置");
+  s.assistant.wakeWords = s.assistant.wakeWords.map(w => w.trim()).filter(Boolean);
   for (const key of Object.keys(defaults.models)) {
     const m = s.models[key];
     if (
@@ -155,7 +165,12 @@ export function validateSettings(s) {
       typeof m.baseUrl !== "string" ||
       typeof m.model !== "string" ||
       typeof m.apiKey !== "string" ||
-      typeof m.thinking !== "boolean"
+      typeof m.voice !== "string" ||
+      typeof m.thinking !== "boolean" ||
+      m.baseUrl.length > 512 ||
+      m.model.length > 256 ||
+      m.apiKey.length > 512 ||
+      m.voice.length > 256
     )
       throw new Error("无效的模型设置");
     if (m.baseUrl && !/^https?:\/\//i.test(m.baseUrl))

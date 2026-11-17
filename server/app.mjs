@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import staticFiles from "@fastify/static";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { isIPv4 } from "node:net";
 import { existsSync, readFileSync } from "node:fs";
@@ -75,21 +75,6 @@ export async function createApplication({
   home.deviceCall = (...args) => gateway.call(...args);
   const admin = Fastify({ logger, bodyLimit: 2 * 1024 * 1024 });
   const device = Fastify({ logger, bodyLimit: 1024 * 1024 });
-  admin.addHook("onRequest", (req, _reply, done) => {
-    if (!/^\/api\/(?:state|chat|sessions|messages|preferences|memories|memory|medical|dictionary)(?:[/?]|$)/.test(req.url)) return done();
-    try {
-      const id = req.headers["x-douli-person"] || new URL(req.url, "http://localhost").searchParams.get("person") || "";
-      people.scope.run(people.bundle(id), done);
-    } catch (error) { done(error); }
-  });
-  if (process.env.DOULI_MOBILE === "1" && process.env.DOULI_STOP_TOKEN) {
-    admin.post("/api/mobile/stop", async (req, reply) => {
-      if (req.headers.authorization !== `Bearer ${process.env.DOULI_STOP_TOKEN}`)
-        return reply.code(403).send({ error: "未授权" });
-      reply.send({ ok: true });
-      setTimeout(() => process.emit("SIGTERM"), 100);
-    });
-  }
   admin.addHook("onRequest", async (req, reply) => {
     const ip = req.ip;
     if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ip))
@@ -104,9 +89,28 @@ export async function createApplication({
       return reply.code(403).send({ error: "请使用本机地址访问" });
     if (req.headers.origin && !isLocalOrigin(req.headers.origin, adminPort))
       return reply.code(403).send({ error: "不允许跨站访问本地管理接口" });
+    if (req.url.startsWith("/api/") && req.headers["sec-fetch-site"] === "cross-site")
+      return reply.code(403).send({ error: "不允许跨站访问本地管理接口" });
     reply.header("Cache-Control", "no-store");
     reply.header("X-Content-Type-Options", "nosniff");
   });
+  admin.addHook("onRequest", (req, _reply, done) => {
+    if (!/^\/api\/(?:state|chat|sessions|messages|preferences|memories|memory|medical|dictionary)(?:[/?]|$)/.test(req.url)) return done();
+    try {
+      const id = req.headers["x-douli-person"] || new URL(req.url, "http://localhost").searchParams.get("person") || "";
+      people.scope.run(people.bundle(id), done);
+    } catch (error) { done(error); }
+  });
+  if (process.env.DOULI_MOBILE === "1" && process.env.DOULI_STOP_TOKEN) {
+    const stopAuth = Buffer.from(`Bearer ${process.env.DOULI_STOP_TOKEN}`);
+    admin.post("/api/mobile/stop", async (req, reply) => {
+      const header = Buffer.from(String(req.headers.authorization || ""));
+      if (header.length !== stopAuth.length || !timingSafeEqual(header, stopAuth))
+        return reply.code(403).send({ error: "未授权" });
+      reply.send({ ok: true });
+      setTimeout(() => process.emit("SIGTERM"), 100);
+    });
+  }
   for (const app of [admin, device])
     app.setErrorHandler((error, req, reply) => {
       reply.code(error.statusCode || 400).send({ error: error.message });
@@ -161,6 +165,8 @@ export async function createApplication({
     ),
   }));
   admin.put("/api/settings", async (req) => {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body))
+      throw new Error("无效的设置内容");
     const current = store.settings();
     const patch = structuredClone(req.body);
     // Provider IDs are managed by enrollment, never by a stale settings form.
@@ -504,6 +510,8 @@ export async function createApplication({
       store.db
         .prepare("INSERT OR REPLACE INTO sensor_sources VALUES (?,?)")
         .run(id, store.seal(source));
+    else if (req.body.source === null)
+      store.db.prepare("DELETE FROM sensor_sources WHERE id=?").run(id);
     return { id };
   });
   admin.delete("/api/sensors/:id", async (req) => {
@@ -566,8 +574,7 @@ export async function createApplication({
   gateway.attach(device.server, false);
   const remote = await createRemoteGateway(gateway, remoteConfig);
   const timer = setInterval(() => {
-    void home.pollSensors().catch(() => {});
-    void home.tick().catch(() => {});
+    void home.pollSensors().catch(() => {}).then(() => home.tick()).catch(() => {});
   }, 15000);
   timer.unref();
   memory.start();

@@ -24,7 +24,7 @@ import {
   recordCorrection,
 } from "../server/input.mjs";
 import { putMemory, retrieveMemories } from "../server/memory.mjs";
-import { HomeService } from "../server/home.mjs";
+import { HomeService, validateAction } from "../server/home.mjs";
 import { requestsAction } from "../server/engine.mjs";
 
 export function fixture(t) {
@@ -116,6 +116,19 @@ test("settings survive restart, secrets are encrypted and blank public output is
       mergeSettings(defaults, { assistant: { night: { volume: 9 } } }),
     ),
   );
+  for (const invalid of [
+    { privacy: { autoMemory: "true" } },
+    { privacy: { saveAudio: 1 } },
+    { input: { refine: "no" } },
+    { assistant: { replyLength: "超长" } },
+    { assistant: { humor: 120 } },
+  ]) assert.throws(() => validateSettings(mergeSettings(defaults, invalid)));
+  assert.deepEqual(
+    validateSettings(mergeSettings(defaults, { assistant: { wakeWords: [" 你好豆梨 ", ""] } })).assistant.wakeWords,
+    ["你好豆梨"],
+  );
+  for (const badAction of [null, {}, { type: "homeassistant", baseUrl: "ftp://ha", entityId: "light.a", service: "light.turn_on" }, { type: "homeassistant", baseUrl: "http://ha", entityId: "light.a", service: "invalid" }])
+    assert.throws(() => validateAction(badAction));
 });
 test("input guards protect negation and numbers; dictionary suggestions require approval", (t) => {
   const { store } = fixture(t);

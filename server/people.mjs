@@ -151,9 +151,13 @@ export function registerPeopleRoutes(admin, people) {
   admin.get("/api/people", async () => people.state());
   admin.post("/api/people", async req => people.create(req.body?.name));
   admin.put("/api/people/:id", async req => {
-    people.bundle(req.params.id);
     if (typeof req.body?.name !== "string" || !req.body.name.trim() || req.body.name.length > 40) throw new Error("请填写 1–40 字的称呼");
-    people.root.store.db.prepare("UPDATE people SET name=? WHERE id=?").run(req.body.name.trim(), req.params.id);
+    const name = req.body.name.trim();
+    if (!idPattern.test(req.params.id)) throw Object.assign(new Error("个人档案不存在"), { statusCode: 404 });
+    const updated = people.root.store.db.prepare("UPDATE people SET name=? WHERE id=?").run(name, req.params.id);
+    if (!updated.changes) throw Object.assign(new Error("个人档案不存在"), { statusCode: 404 });
+    const loaded = people.bundles.get(req.params.id);
+    if (loaded) { loaded.person = { ...loaded.person, name }; loaded.engine.person = loaded.person; }
     return { ok: true };
   });
   admin.post("/api/people/voiceprint/check", async () => people.check());

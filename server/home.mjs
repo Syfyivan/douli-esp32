@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
 
 export function validateAction(config) {
-  if (!["http", "homeassistant", "device"].includes(config.type))
+  if (!config || typeof config !== "object" || Array.isArray(config) || !["http", "homeassistant", "device"].includes(config.type))
     throw new Error("未知的动作类型");
   if (config.type === "http") {
     const u = new URL(config.url);
     if (!["http:", "https:"].includes(u.protocol))
       throw new Error("动作地址必须是 HTTP");
   }
-  if (
-    config.type === "homeassistant" &&
-    (!config.baseUrl || !config.entityId || !config.service)
-  )
-    throw new Error("请填写 Home Assistant 地址、实体和服务");
+  if (config.type === "homeassistant") {
+    if (!config.baseUrl || !config.entityId || !config.service)
+      throw new Error("请填写 Home Assistant 地址、实体和服务");
+    const u = new URL(config.baseUrl);
+    if (!["http:", "https:"].includes(u.protocol))
+      throw new Error("动作地址必须是 HTTP");
+    if (!/^[a-z0-9_]+\.[a-z0-9_]+$/i.test(String(config.service)))
+      throw new Error("服务应为 light.turn_off 这样的格式");
+  }
   if (config.type === "device" && (!config.deviceId || !config.tool))
     throw new Error("请选择设备和工具");
   return config;
@@ -171,6 +175,9 @@ export class HomeService {
     if (!result.changes) throw new Error("传感器尚未登记");
   }
   async tick(now = new Date()) {
+    if (this.ticking || this.store.closed) return;
+    this.ticking = true;
+    try {
     for (const row of this.store.all("rules").filter((r) => r.enabled)) {
       const c = JSON.parse(row.config);
       const last = row.last_fired ? new Date(row.last_fired) : null;
@@ -221,6 +228,9 @@ export class HomeService {
           /* execute records the failure; cooldown prevents hammering. */
         }
       }
+    }
+    } finally {
+      this.ticking = false;
     }
   }
   saveRule(input) {
