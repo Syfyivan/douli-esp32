@@ -45,6 +45,7 @@ export class Gateway {
     this.store = store;
     this.engine = engine;
     this.connections = new Map();
+    this.activeConnections = new Set();
     this.pairingUntil = 0;
     this.wsServers = [];
     this.activations = new Map();
@@ -54,6 +55,13 @@ export class Gateway {
   warmGreeting() {
     if (this.connections.size) return this.greetingAudio.warm(this.store.settings());
     return Promise.resolve();
+  }
+  refreshSettings(deviceId, config) {
+    if (deviceId) {
+      this.connections.get(deviceId)?.refreshSettings(config);
+      return;
+    }
+    for (const connection of this.activeConnections) connection.refreshSettings();
   }
   pair() {
     this.pairingUntil = Date.now() + 5 * 60 * 1000;
@@ -281,7 +289,15 @@ export class Gateway {
   close() {
     this.greetingAudio.close();
     // WebSocket close events may arrive after the application closes SQLite.
-    for (const connection of this.connections.values()) connection.saveConversation();
+    for (const connection of this.activeConnections) {
+      connection.saveConversation();
+      clearInterval(connection.timer);
+      clearTimeout(connection.standbyTimer);
+      clearTimeout(connection.pauseTimer);
+      connection.realtime?.close();
+      connection.streamingTts?.close();
+      connection.abort();
+    }
     for (const wss of this.wsServers) {
       for (const ws of wss.clients) ws.close();
       wss.close();
@@ -292,6 +308,7 @@ export class Gateway {
 export class VoiceConnection {
   constructor(gateway, socket, options) {
     this.gateway = gateway;
+    gateway.activeConnections?.add(this);
     const bundle = options.browser && gateway.people ? gateway.people.bundle(options.personId) : null;
     this.store = bundle?.store || gateway.store;
     this.engine = bundle?.engine || gateway.engine;
@@ -402,6 +419,7 @@ export class VoiceConnection {
       for (const p of this.pendingRpc.values())
         p.reject(new Error("设备连接已断开"));
       for (const p of this.pendingBackend.values()) p.reject(new Error("切换尚未确认，设备连接已断开"));
+      gateway.activeConnections?.delete(this);
       if (options.device && gateway.connections.get(options.device.id) === this)
         gateway.connections.delete(options.device.id);
     });
@@ -541,6 +559,7 @@ export class VoiceConnection {
     this.endConversation("manual");
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => finish(new Error("板子未在规定时间内确认切换")), 10000);
+      timer.unref?.();
       const finish = (error, value) => {
         clearTimeout(timer);
         this.pendingBackend.delete(plan.revision);
@@ -569,6 +588,16 @@ export class VoiceConnection {
       input.rmsThreshold = this.config.rmsThreshold;
     return input;
   }
+  refreshSettings(configPatch) {
+    if (this.store.closed) return;
+    if (configPatch) this.config = configPatch;
+    else if (this.options.device) {
+      const row = this.store.db.prepare("SELECT metadata FROM devices WHERE id=?").get(this.options.device.id);
+      if (row) this.config = deviceConfig(JSON.parse(row.metadata || "{}").config);
+    }
+    this.buffer.config = this.inputSettings();
+    this.turnDetector.settings = this.store.settings();
+  }
   error(e) {
     this.lastError = { at: new Date().toISOString(), message: String(e.message).slice(0, 500) };
     this.send({
@@ -592,6 +621,7 @@ export class VoiceConnection {
     }
     this.generation++;
     this.greetingGeneration = null;
+    this.detectGeneration = null;
     this.controller?.abort();
     // This connection owns its controller; a stale connection must not abort a
     // new connection or a text request that happens to share the same session.
@@ -623,8 +653,9 @@ export class VoiceConnection {
     this.store.db.prepare("UPDATE devices SET metadata=? WHERE id=?").run(JSON.stringify(metadata), id);
   }
   ensureSession() {
-    if (this.sessionPersisted) return;
-    this.session = this.store.createSession(this.options.device.id, this.session.id);
+    if (this.sessionPersisted && this.store.db.prepare("SELECT 1 FROM sessions WHERE id=?").get(this.session.id)) return;
+    if (this.sessionPersisted && this.options.device) this.session = { id: randomUUID(), source: this.options.device.id };
+    this.session = this.store.createSession(this.options.device ? this.options.device.id : "browser-voice", this.session.id);
     this.sessionPersisted = true;
     this.conversationStarted = true;
   }
@@ -791,10 +822,12 @@ export class VoiceConnection {
       if (m.state === "start") {
         this.resumeConversation();
         // ESP32 sends detect then start for the same wake-up. Starting capture
-        // is not an interruption of the greeting triggered by that detect.
+        // is not an interruption of the greeting or utterance triggered by that detect.
         // Explicit abort/standby and actual speech interruption still cancel it.
-        if (this.options.device && this.greetingGeneration === this.generation)
+        if (this.options.device && (this.greetingGeneration === this.generation || this.detectGeneration === this.generation)) {
+          this.detectGeneration = null;
           return;
+        }
         this.abort();
         this.state = "listening";
         this.startedAt = Date.now();
@@ -817,7 +850,10 @@ export class VoiceConnection {
         const words = this.store.settings().assistant.wakeWords;
         if (words.some((w) => m.text.replace(/[，。！？\s]/g, "").includes(w)))
           void this.greet();
-        else void this.process(null, m.text);
+        else {
+          this.detectGeneration = this.generation + 1;
+          void this.process(null, m.text);
+        }
       }
     }
     if (m.type === "text" && this.options.browser) {
@@ -883,7 +919,9 @@ export class VoiceConnection {
       this.startedAt = Date.now();
       // Feed separately so quiet pre-roll cannot dilute the first syllable's
       // energy or cause the utterance detector to drop the start of a correction.
-      for (const frame of frames) this.capture(frame, rms(frame) >= Math.min(input.rmsThreshold, 0.004));
+      const threshold = Math.min(input.rmsThreshold, 0.004);
+      for (let i = 0; i < frames.length; i++)
+        this.capture(frames[i], rms(frames[i]) >= threshold, i === frames.length - 1);
       return;
     }
     this.capture(pcm, voiced);
@@ -996,9 +1034,13 @@ export class VoiceConnection {
     this.lastBargeInAt = new Date().toISOString();
     this.state = "listening";
     this.startedAt = Date.now();
-    if (capture) for (const frame of frames) this.capture(frame, rms(frame) >= Math.min(this.inputSettings().rmsThreshold, 0.004));
+    if (capture) {
+      const threshold = Math.min(this.inputSettings().rmsThreshold, 0.004);
+      for (let i = 0; i < frames.length; i++)
+        this.capture(frames[i], rms(frames[i]) >= threshold, i === frames.length - 1 && !candidate.continued);
+    }
   }
-  capture(pcm, voiced = rms(pcm) >= this.inputSettings().rmsThreshold) {
+  capture(pcm, voiced = rms(pcm) >= this.inputSettings().rmsThreshold, allowEndpoint = true) {
     if (!this.call.acceptingAudio || this.call.output !== "idle") return;
     const input = this.buffer.config;
     if (
@@ -1011,7 +1053,7 @@ export class VoiceConnection {
     }
     if (voiced) this.turnDetector.speech();
     else if (!this.mediation.active) this.turnDetector.observeSilence(this.buffer.silenceMs);
-    const finished = this.buffer.push(pcm, this.mode !== "manual", voiced, this.turnDetector.threshold());
+    const finished = this.buffer.push(pcm, this.mode !== "manual" && allowEndpoint, voiced, this.turnDetector.threshold());
     this.call.update({ input: this.buffer.started ? "recognizing" : "listening" });
     if (!this.live && (this.buffer.started || finished)) {
       this.live = new LiveTranscriber(
@@ -1219,18 +1261,24 @@ export class VoiceConnection {
       }
       if (!turn.guest && !turn.mediation) {
         turn.personalStore = turnStore;
-        this.ensureSession();
+        if (turnStore === this.store) {
+          this.ensureSession();
+          sessionId = this.session.id;
+        } else this.conversationStarted = true;
         this.saveConversation();
       }
       this.send({ type: "stt", text: addressed });
       if (isFarewell(addressed, this.store.settings().assistant.name)) {
         // End before refinement, routing, memory, chat or speech generation.
         // Cancel outstanding work and stop any audio already queued by clients.
-        const message = turnStore.message(sessionId, "user", addressed, {
-          rawText: text,
-          metadata: { voiceCommand: "farewell" },
-        });
-        if (this.options.browser) this.send({ type: "user", message });
+        turn.farewell = true;
+        if (!turnStore.closed && turnStore.db.prepare("SELECT 1 FROM sessions WHERE id=?").get(sessionId)) {
+          const message = turnStore.message(sessionId, "user", addressed, {
+            rawText: text,
+            metadata: { voiceCommand: "farewell" },
+          });
+          if (this.options.browser) this.send({ type: "user", message });
+        }
         this.endConversation();
         return;
       }
@@ -1433,6 +1481,7 @@ export class VoiceConnection {
             ...(playbackGain != null ? { playback_gain: playbackGain } : {}) });
         }
         segment.durationMs += 20;
+        if (this.ws.readyState !== WebSocket.OPEN) return;
         const data = this.options.browser ? frame : Buffer.from(this.encoder.encode(frame, 320));
         this.ws.send(packAudio(data, this.version));
         pacer.sent();
@@ -1464,25 +1513,32 @@ export class VoiceConnection {
       cacheHit: prepared?.cacheHit ?? false, firstAudioSentMs: null };
     this.greetingGeneration = generation;
     this.send({ type: "tts", state: "start" });
+    let greetError = null;
     try {
       await this.speak(
         settings.assistant.greeting,
         signal,
-        () => !signal.aborted && generation === this.generation,
+        () => !signal.aborted && generation === this.generation && this.ws.readyState === WebSocket.OPEN,
         turn,
         prepared?.audio,
         settings,
       );
       if (!signal.aborted && turn.pacer) await this.paceOutput(turn, signal, true);
     } catch (e) {
+      greetError = e;
       if (!signal.aborted) this.error(e);
     }
     if (this.greetingGeneration === generation) this.greetingGeneration = null;
-    if (!signal.aborted) {
-      turn.generated = true;
-      turn.wake.completed = true;
-      this.send({ type: "tts", state: "stop" });
-      if (!turn.acknowledged || turn.segments.every(s => s.finished && s.playedMs >= s.durationMs)) this.state = "listening";
+    if (!signal.aborted && generation === this.generation && this.ws.readyState === WebSocket.OPEN) {
+      if (greetError) {
+        turn.interrupted = true;
+        turn.wake.interrupted = true;
+      } else {
+        turn.generated = true;
+        turn.wake.completed = true;
+      }
+      this.send({ type: "tts", state: "stop", ...(greetError ? { interrupted: true } : {}) });
+      if (greetError || !turn.acknowledged || turn.segments.every(s => s.finished && s.playedMs >= s.durationMs)) this.state = "listening";
       this.startedAt = Date.now();
       this.lastConversationActivity = this.startedAt;
       this.saveConversation();
@@ -1492,15 +1548,17 @@ export class VoiceConnection {
   rpc(method, params, signal) {
     const id = ++this.rpcId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRpc.delete(id);
-        reject(new Error("设备响应超时"));
-      }, 10000);
+      let timer;
       const done = (fn) => (value) => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
         fn(value);
       };
+      timer = setTimeout(() => {
+        this.pendingRpc.delete(id);
+        done(reject)(new Error("设备响应超时"));
+      }, 10000);
+      timer.unref?.();
       const abort = () => {
         this.pendingRpc.delete(id);
         done(reject)(new Error("设备操作已取消"));

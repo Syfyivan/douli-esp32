@@ -28,6 +28,7 @@ export class StreamingPlayback {
           ...(playbackGain != null ? { playback_gain: playbackGain } : {}) });
       }
       s.durationMs += 20;
+      if (c.ws.readyState !== 1) return;
       const data = c.options.browser ? frame : Buffer.from(c.encoder.encode(frame, 320));
       c.ws.send(packAudio(data, c.version)); pacer.sent();
       c.recordAudioSent(this.turn, pacer);

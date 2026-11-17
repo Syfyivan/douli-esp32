@@ -5,14 +5,14 @@ import { fastAssistantControl } from "./assistant-control.mjs";
 // Run alongside answering, with only this turn's transcript and the public
 // assistant name. Never infer a device action from the assistant's reply.
 export async function conversationEndIntent(settings, text, signal) {
-  signal?.throwIfAborted();
-  if (isFarewell(text, settings.assistant.name)) return true;
-  // Complete local settings commands (including "再大一点") cannot be a
-  // farewell. This does not authorize a setting change or infer speaker state.
-  if (fastAssistantControl(text, { name: settings.assistant.name, pendingVolume: true })) return false;
-  const profile = settings.models.daily;
-  if (!profile.baseUrl || !profile.model) return null;
   try {
+    signal?.throwIfAborted();
+    if (isFarewell(text, settings.assistant.name)) return true;
+    // Complete local settings commands (including "再大一点") cannot be a
+    // farewell. This does not authorize a setting change or infer speaker state.
+    if (fastAssistantControl(text, { name: settings.assistant.name, pendingVolume: true })) return false;
+    const profile = settings.models.daily;
+    if (!profile.baseUrl || !profile.model) return null;
     const output = await complete({ ...profile, thinking: false }, [
       { role: "system", content: `判断用户最新这句话是否明确想结束与语音助手的本次聊天。只输出 JSON {"end":true} 或 {"end":false}，不要回答用户的问题。
 根据意思判断，不要求关键词。告别、表示这次聊完了、改天再聊、让助手休息/退下、不用再陪自己说话，都表示结束。

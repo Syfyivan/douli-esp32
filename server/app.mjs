@@ -61,7 +61,7 @@ export async function createApplication({
   engine.health = health;
   const gateway = new Gateway(store, engine, { adminPort });
   const sync = new SyncService(store, { addresses: () => localAddresses(store.directory), port: gatewayPort,
-    onChange: () => memory.schedule() });
+    onChange: () => { gateway.refreshSettings(); memory.schedule(); } });
   const backends = new BackendSelectionService(store, gateway, sync, { remoteConfig });
   const people = new People({ store, memory, engine, health, home }, { remoteConfig });
   gateway.people = people;
@@ -194,6 +194,7 @@ export async function createApplication({
     )
       delete patch.input.streamingToken;
     store.saveSettings(validateSettings(mergeSettings(current, patch)));
+    gateway.refreshSettings();
     void gateway.warmGreeting();
     memory.schedule();
     return store.publicSettings();
@@ -439,6 +440,7 @@ export async function createApplication({
         found.id,
       );
     if (req.body.approved === false) gateway.connections.get(found.id)?.close();
+    else if (metadata.config) gateway.refreshSettings(found.id, metadata.config);
     return { ok: true };
   });
   admin.delete("/api/devices/:id", async (req) => {

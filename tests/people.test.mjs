@@ -205,6 +205,7 @@ test("shared speaker answers unknown speakers without personal context, tools or
   assert.deepEqual(calls.map(c => c.history), [[], [], [a.name + "的偏好"]]);
   assert.notEqual(calls[0].input.sessionId, calls[1].input.sessionId);
   assert.equal(calls[0].input.sessionId, calls[2].input.sessionId);
+  assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM sessions").get().n, 0, "matched personal turns must not leave empty sessions in the root profile");
   assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM messages").get().n, 0);
   for (const person of [a, b]) assert.ok(!JSON.stringify(app.people.bundle(person.id).store.sessions()).includes("unknown-private"));
   assert.ok(sent.some(e => e.type === "speaker" && e.status === "unknown"));
@@ -239,6 +240,7 @@ test("shared speaker answers unknown speakers without personal context, tools or
   await connection.process(null, "再见，老李。", null, { status: "unknown" });
   assert.equal(connection.conversationEnded, true);
   assert.equal(spoken.length, beforeFarewell, "farewell ends without calling the guest model");
+  assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM sessions").get().n, 0, "matched personal turns must not leave empty sessions in the root profile");
   assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM messages").get().n, 0);
   for (const person of [a, b]) {
     const personal = app.people.bundle(person.id).store;

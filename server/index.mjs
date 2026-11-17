@@ -16,8 +16,8 @@ console.log(
   "豆梨管理界面：http://127.0.0.1:" + (process.env.DOULI_PORT || 8788),
 );
 console.log("设备服务已启动；在管理界面的设备页开启配对。");
+let closing = null;
 for (const name of ["SIGINT", "SIGTERM"])
-  process.once(name, async () => {
-    await app.close();
-    process.exit(0);
+  process.once(name, () => {
+    closing ||= app.close().catch(() => {}).finally(() => process.exit(0));
   });

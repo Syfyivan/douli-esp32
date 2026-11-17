@@ -459,7 +459,8 @@ export class ChatEngine {
         farewell: isFarewell(input.text, settings.assistant.name),
       };
     } catch (e) {
-      if (answer && !(selectedRoute === "health" && this.health)) {
+      if (answer && !(selectedRoute === "health" && this.health) && !this.store.closed &&
+          this.store.db.prepare("SELECT 1 FROM sessions WHERE id=?").get(session.id)) {
         const interrupted = this.store.message(session.id, "assistant", answer, {
           route: selectedRoute,
           status: currentSignal.aborted ? "interrupted" : "error",

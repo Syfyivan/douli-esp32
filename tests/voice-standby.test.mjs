@@ -381,3 +381,57 @@ test("a saved first turn survives a missing metadata checkpoint", async t => {
   await again.connection.process(null, "再见豆梨");
   assert.deepEqual(store.messages(first).map(m => m.text), ["已经保存的第一句话", "再见豆梨"]);
 });
+
+test("barge-in replay across a pause retains continuation frames instead of endpointing early", async t => {
+  const { connection } = setup(t, { browser: true });
+  let processed = 0;
+  t.mock.method(connection, "process", async () => { processed++; });
+  t.mock.method(LiveTranscriber.prototype, "finish", () => new Promise(() => {}));
+  const voiced = Buffer.alloc(640);
+  for (let i = 0; i < 640; i += 2) voiced.writeInt16LE(4000, i);
+  connection.state = "speaking";
+  connection.beginBarge(Array(8).fill(voiced));
+  for (let i = 0; i < 30; i++) connection.captureBarge(Buffer.alloc(640), false);
+  assert.equal(connection.bargeCandidate.finishing, true);
+  connection.captureBarge(voiced, true);
+  assert.equal(connection.bargeCandidate, null);
+  assert.equal(processed, 0, "historical pause before continuation must not auto-endpoint mid-replay");
+  assert.ok(connection.buffer.speechMs >= 180);
+});
+
+test("deleting an active session recovers cleanly on next turn or farewell, and failed greetings return to listening", async t => {
+  const { connection, store, gateway, sent } = setup(t, { persistent: true });
+  gateway.engine.run = async ({ sessionId, text }) => {
+    store.message(sessionId, "user", text);
+    return { farewell: false };
+  };
+  await connection.process(null, "第一句");
+  const deleted = connection.session.id;
+  store.db.prepare("DELETE FROM sessions WHERE id=?").run(deleted);
+  await connection.process(null, "删除后继续说");
+  assert.notEqual(connection.session.id, deleted);
+  assert.equal(store.messages(connection.session.id)[0].text, "删除后继续说");
+  store.db.prepare("DELETE FROM sessions WHERE id=?").run(connection.session.id);
+  await connection.process(null, "再见豆梨");
+  assert.equal(connection.standby, true);
+
+  connection.features.playback_ack = true;
+  connection.resumeConversation();
+  t.mock.method(connection, "speak", async (_t, _s, _a, turn) => {
+    turn.segments.push({ id: 0, text: "我在", durationMs: 0, playedMs: 0, finished: false });
+    throw new Error("fixture greeting TTS failed");
+  });
+  await connection.greet();
+  assert.equal(connection.lastWake.completed, undefined);
+  assert.equal(connection.lastWake.interrupted, true);
+  assert.equal(connection.state, "listening");
+  assert.ok(sent.some(e => e.type === "tts" && e.state === "stop" && e.interrupted === true));
+
+  const settings = store.settings();
+  settings.input.silenceMs = 900;
+  store.saveSettings(settings);
+  connection.refreshSettings({ route: "daily", volume: 0.4, rmsThreshold: 0.09 });
+  assert.equal(connection.config.volume, 0.4);
+  assert.equal(connection.buffer.config.rmsThreshold, 0.09);
+  assert.equal(connection.buffer.config.silenceMs, 900);
+});
