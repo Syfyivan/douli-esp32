@@ -251,3 +251,20 @@ test("repeated inferred facts stay one suggestion and corrected evidence invalid
   assert.equal(store.all("memories")[0].status, "needs_review");
   assert.equal(retrieveMemories(store, "香菜").length, 0);
 });
+test("session queries and cascade deletes use indexes without temp B-trees or full-table scans", (t) => {
+  const { store } = fixture(t);
+  const s = store.session();
+  const m1 = store.message(s.id, "user", "第一条索引测试消息");
+  const m2 = store.message(s.id, "assistant", "第二条回复");
+  assert.equal(store.lastMessage(s.id).id, m2.id);
+  assert.equal(store.sessions().length, 1);
+  assert.equal(store.sessions("索引测试").length, 1);
+  assert.equal(store.sessions("不存在的词").length, 0);
+  const listPlan = store.db.prepare("EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 200").all();
+  assert.ok(!JSON.stringify(listPlan).includes("TEMP B-TREE"));
+  const deletePlan = store.db.prepare("EXPLAIN QUERY PLAN DELETE FROM messages WHERE id=?").all();
+  assert.ok(!JSON.stringify(deletePlan).includes("SCAN memory_turn_inputs"));
+  assert.ok(!JSON.stringify(deletePlan).includes("SCAN memory_dependencies"));
+  store.db.prepare("INSERT INTO memory_exclusions VALUES (?)").run(m1.id);
+  assert.equal(store.excludedIds(s.id).has(m1.id), true);
+});

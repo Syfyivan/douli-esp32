@@ -263,14 +263,22 @@ export async function createApplication({
   }));
   admin.delete("/api/sessions/:id", async (req) => {
     engine.abort(req.params.id);
-    // Remove derived, unpinned memories with the source conversation.
-    for (const m of store.db
-      .prepare(
-        "SELECT id FROM memories WHERE (source_id IN (SELECT id FROM messages WHERE session_id=?) OR id IN (SELECT memory_id FROM memory_evidence WHERE message_id IN (SELECT id FROM messages WHERE session_id=?))) AND pinned=0",
-      )
-      .all(req.params.id, req.params.id))
-      forgetMemory(store, m.id);
-    store.db.prepare("DELETE FROM sessions WHERE id=?").run(req.params.id);
+    store.db.exec("SAVEPOINT session_delete");
+    try {
+      // Remove derived, unpinned memories with the source conversation.
+      for (const m of store.db
+        .prepare(
+          "SELECT id FROM memories WHERE (source_id IN (SELECT id FROM messages WHERE session_id=?) OR id IN (SELECT memory_id FROM memory_evidence WHERE message_id IN (SELECT id FROM messages WHERE session_id=?))) AND pinned=0",
+        )
+        .all(req.params.id, req.params.id))
+        forgetMemory(store, m.id);
+      store.db.prepare("DELETE FROM sessions WHERE id=?").run(req.params.id);
+      store.db.exec("RELEASE session_delete");
+    } catch (error) {
+      store.db.exec("ROLLBACK TO session_delete; RELEASE session_delete");
+      throw error;
+    }
+    memory.schedule();
     return { ok: true };
   });
   admin.get("/api/sessions/:id/export", async (req, reply) => {

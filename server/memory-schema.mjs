@@ -55,6 +55,9 @@ export function migrateMemory(db) {
       CREATE INDEX IF NOT EXISTS memory_fact ON memories(subject,predicate,status);
       CREATE INDEX IF NOT EXISTS memory_evidence_source ON memory_evidence(message_id);
       CREATE INDEX IF NOT EXISTS summary_message ON summary_sources(message_id);
+      CREATE INDEX IF NOT EXISTS summary_session ON memory_summaries(session_id);
+      CREATE INDEX IF NOT EXISTS summary_day ON memory_summaries(kind,day);
+      CREATE INDEX IF NOT EXISTS memory_pending_source ON memory_pending(source_id);
       CREATE TRIGGER IF NOT EXISTS memory_vector_delete AFTER DELETE ON memories BEGIN
         DELETE FROM memory_vectors WHERE kind='memory' AND record_id=OLD.id;
       END;
@@ -113,27 +116,34 @@ function migrateIncrementalMemory(db) {
     );
     CREATE INDEX IF NOT EXISTS episode_time ON memory_episodes(occurred_at);
     CREATE INDEX IF NOT EXISTS episode_turn ON memory_episodes(source_id);
+    CREATE INDEX IF NOT EXISTS episode_session ON memory_episodes(session_id,occurred_at,id);
+    CREATE INDEX IF NOT EXISTS memory_job_assistant ON memory_jobs(assistant_id);
     CREATE TABLE IF NOT EXISTS episode_sources (
       episode_id TEXT NOT NULL REFERENCES memory_episodes(id) ON DELETE CASCADE,
       message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
       quote TEXT NOT NULL, PRIMARY KEY(episode_id,message_id,quote)
     );
+    CREATE INDEX IF NOT EXISTS episode_source_message ON episode_sources(message_id);
     CREATE TABLE IF NOT EXISTS memory_dependencies (
       memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
       message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
       source_hash TEXT NOT NULL, PRIMARY KEY(memory_id,message_id)
     );
+    CREATE INDEX IF NOT EXISTS memory_dep_message ON memory_dependencies(message_id);
     CREATE TABLE IF NOT EXISTS episode_dependencies (
       episode_id TEXT NOT NULL REFERENCES memory_episodes(id) ON DELETE CASCADE,
       message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
       source_hash TEXT NOT NULL, PRIMARY KEY(episode_id,message_id)
     );
+    CREATE INDEX IF NOT EXISTS episode_dep_message ON episode_dependencies(message_id);
     CREATE TABLE IF NOT EXISTS memory_turn_inputs (
       turn_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
       assistant_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
       message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
       source_hash TEXT NOT NULL, PRIMARY KEY(turn_id,message_id)
     );
+    CREATE INDEX IF NOT EXISTS memory_turn_input_message ON memory_turn_inputs(message_id);
+    CREATE INDEX IF NOT EXISTS memory_turn_input_assistant ON memory_turn_inputs(assistant_id);
     CREATE TABLE IF NOT EXISTS memory_summary_jobs (key TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS memory_merge_jobs (subject TEXT NOT NULL, predicate TEXT NOT NULL,
       revision INTEGER NOT NULL DEFAULT 1, cursor INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(subject,predicate));

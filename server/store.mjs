@@ -35,6 +35,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS forgotten_memories (fingerprint TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS rules (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, config TEXT NOT NULL, last_fired TEXT);
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, kind TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS session_updated ON sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS message_session ON messages(session_id,created_at);
       CREATE INDEX IF NOT EXISTS memory_source ON memories(source_id);
     `);
@@ -44,6 +45,19 @@ export class Store {
       this.db.prepare("UPDATE dictionary SET scope='assistant_address' WHERE replacement=?").run(this.settings().assistant.name);
     }
     this.getSettingsStmt = this.db.prepare("SELECT value FROM settings WHERE id=?");
+    this.listSessionsStmt = this.db.prepare("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 200");
+    this.searchSessionsStmt = this.db.prepare(
+      "SELECT * FROM sessions s WHERE s.title LIKE ? OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id=s.id AND m.text LIKE ?) ORDER BY s.updated_at DESC LIMIT 200",
+    );
+    this.listMessagesStmt = this.db.prepare(
+      "SELECT m.*, EXISTS(SELECT 1 FROM audio a WHERE a.message_id=m.id) AS has_audio FROM messages m WHERE session_id=? ORDER BY created_at,rowid",
+    );
+    this.lastMessageStmt = this.db.prepare(
+      "SELECT * FROM messages WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    );
+    this.excludedMessagesStmt = this.db.prepare(
+      "SELECT message_id FROM memory_exclusions WHERE message_id IN (SELECT id FROM messages WHERE session_id=?)",
+    );
   }
   seal(value) {
     const nonce = randomBytes(12);
@@ -141,19 +155,21 @@ export class Store {
     return row;
   }
   sessions(query = "") {
-    return this.db
-      .prepare(
-        `SELECT DISTINCT s.* FROM sessions s LEFT JOIN messages m ON m.session_id=s.id WHERE s.title LIKE ? OR m.text LIKE ? ORDER BY s.updated_at DESC LIMIT 200`,
-      )
-      .all(`%${query}%`, `%${query}%`);
+    if (!query) return this.listSessionsStmt.all();
+    return this.searchSessionsStmt.all(`%${query}%`, `%${query}%`);
   }
   messages(id) {
-    return this.db
-      .prepare(
-        "SELECT m.*, EXISTS(SELECT 1 FROM audio a WHERE a.message_id=m.id) AS has_audio FROM messages m WHERE session_id=? ORDER BY created_at,rowid",
-      )
+    return this.listMessagesStmt
       .all(id)
       .map((m) => ({ ...m, metadata: JSON.parse(m.metadata) }));
+  }
+  lastMessage(id) {
+    const row = id ? this.lastMessageStmt.get(id) : null;
+    return row ? { ...row, metadata: JSON.parse(row.metadata) } : undefined;
+  }
+  excludedIds(sessionId) {
+    if (!sessionId) return new Set();
+    return new Set(this.excludedMessagesStmt.all(sessionId).map(r => r.message_id));
   }
   message(sessionId, role, text, fields = {}) {
     const row = {
@@ -167,14 +183,21 @@ export class Store {
       metadata: JSON.stringify(fields.metadata || {}),
       created_at: new Date().toISOString(),
     };
-    this.db
-      .prepare("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?)")
-      .run(...Object.values(row));
-    this.db
-      .prepare(
-        "UPDATE sessions SET updated_at=?, title=CASE WHEN title=? THEN ? ELSE title END WHERE id=?",
-      )
-      .run(row.created_at, "新的对话", text.slice(0, 32), sessionId);
+    this.db.exec("SAVEPOINT message_write");
+    try {
+      this.db
+        .prepare("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?)")
+        .run(...Object.values(row));
+      this.db
+        .prepare(
+          "UPDATE sessions SET updated_at=?, title=CASE WHEN title=? THEN ? ELSE title END WHERE id=?",
+        )
+        .run(row.created_at, "新的对话", text.slice(0, 32), sessionId);
+      this.db.exec("RELEASE message_write");
+    } catch (error) {
+      this.db.exec("ROLLBACK TO message_write; RELEASE message_write");
+      throw error;
+    }
     return { ...row, metadata: fields.metadata || {} };
   }
   saveAudio(id, data, mime = "audio/wav") {
@@ -193,7 +216,7 @@ export class Store {
       );
     this.db
       .prepare(
-        "DELETE FROM events WHERE rowid NOT IN (SELECT rowid FROM events ORDER BY rowid DESC LIMIT 1000)",
+        "DELETE FROM events WHERE rowid <= COALESCE((SELECT rowid FROM events ORDER BY rowid DESC LIMIT 1 OFFSET 1000), 0)",
       )
       .run();
   }

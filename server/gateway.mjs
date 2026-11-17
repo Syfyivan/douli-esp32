@@ -1106,8 +1106,9 @@ export class VoiceConnection {
       const instructions = this.engine.systemPrompt({ settings,
         model: settings.models.realtime.model, outputMode: "voice", nativeAudio: true,
         tools, memoryContext: JSON.parse(this.engine.context(this.session.id)) });
+      const excluded = this.store.excludedIds(this.session.id);
       const recent = this.store.messages(this.session.id).filter(m => !m.metadata?.healthPrivate && !m.metadata?.memoryOperation && !m.metadata?.assistantControl &&
-        !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id)).slice(-20);
+        !excluded.has(m.id)).slice(-20);
       const history = [];
       let user;
       for (const m of recent) {

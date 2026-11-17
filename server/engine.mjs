@@ -48,8 +48,10 @@ export class ChatEngine {
     this.memoryDialogue = new MemoryDialogue(this.memory);
     this.assistantControl = new AssistantControl(store);
   }
-  context(sessionId) {
+  context(sessionId, sessionMessages = null, excluded = null) {
     const { assistant } = this.store.settings();
+    const rows = sessionId ? (sessionMessages || this.store.messages(sessionId)) : [];
+    const excludedSet = sessionId ? (excluded || this.store.excludedIds(sessionId)) : null;
     return JSON.stringify({
       // ASR providers may truncate the context. Put names and confirmed terms
       // first so long preferences/history cannot push them out of the prompt.
@@ -63,9 +65,8 @@ export class ChatEngine {
         .all("preferences")
         .map((p) => ({ name: p.name, value: p.value })),
       recent: sessionId
-        ? this.store
-            .messages(sessionId)
-            .filter(m => !m.metadata?.healthPrivate && !m.metadata?.memoryOperation && !m.metadata?.assistantControl && !m.metadata?.computerTask && !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id))
+        ? rows
+            .filter(m => !m.metadata?.healthPrivate && !m.metadata?.memoryOperation && !m.metadata?.assistantControl && !m.metadata?.computerTask && !excludedSet.has(m.id))
             .slice(-6)
             .map((m) => ({ role: m.role, text: audibleContext(m) }))
         : [],
@@ -183,18 +184,20 @@ export class ChatEngine {
         emit({ type: "done", message, timings: message.metadata.timings });
         return { session, message, text: adjustment.text, input: savedUser, farewell: false };
       }
+      const priorMessages = this.store.messages(session.id);
+      const priorExcluded = this.store.excludedIds(session.id);
       const input = await processInput(
         this.store,
         text,
-        this.context(session.id),
+        this.context(session.id, priorMessages, priorExcluded),
         currentSignal,
         { voice: outputMode === "voice" },
       );
       if (!input.text.trim()) throw new Error("没有识别到有效内容");
       const settings = this.store.settings();
       const selection = await routeRequest({ text: input.text, requested: computerRequest ? "daily" : route,
-        history: this.store.messages(session.id).filter(m => !m.metadata?.memoryOperation && !m.metadata?.assistantControl &&
-          !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id)),
+        history: priorMessages.filter(m => !m.metadata?.memoryOperation && !m.metadata?.assistantControl &&
+          !priorExcluded.has(m.id)),
         settings, signal: currentSignal });
       routing = selection.metadata;
       selectedRoute = routing.route;
@@ -278,11 +281,12 @@ export class ChatEngine {
       const system = this.systemPrompt({ settings, route: selectedRoute,
         model: useRealtime ? realtime.model : profile.model,
         outputMode, nativeAudio: !!useRealtime, tools, memoryContext, visualEvidence });
+      const excluded = this.store.excludedIds(session.id);
       const history = fitItems(this.store
         .messages(session.id)
         .filter((m) => m.status === "complete" || (m.status === "interrupted" && m.metadata?.voicePlayback))
         .filter(m => !m.metadata?.memoryOperation && !m.metadata?.assistantControl)
-        .filter(m => !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id))
+        .filter(m => !excluded.has(m.id))
         .filter(m => m.id !== savedUser.id)
         .reverse().map((m) => ({ role: m.role, content: audibleContext(m) })), settings.memory.historyTokens).reverse();
       history.push({ role: "user", content: savedUser.text });

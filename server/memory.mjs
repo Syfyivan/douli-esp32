@@ -57,7 +57,9 @@ export function forgetMemory(store, id) {
   const sources = [...new Set([row.source_id, ...evidenceFor(store, id).map(e => e.message_id)].filter(Boolean))];
   const summaryIds = new Set(sources.flatMap(source => store.db.prepare("SELECT summary_id FROM summary_sources WHERE message_id=?").all(source).map(s => s.summary_id)));
   for (const source of sources) for (const e of store.db.prepare("SELECT id FROM memory_episodes WHERE source_id=? OR id IN (SELECT episode_id FROM episode_sources WHERE message_id=?)").all(source, source)) summaryIds.add(e.id);
-  const derivedAnswers = store.db.prepare("SELECT id,metadata FROM messages WHERE role='assistant'").all().filter(m => {
+  const needles = [id, ...sources, ...summaryIds];
+  const derivedAnswers = store.db.prepare("SELECT id,metadata FROM messages WHERE role='assistant' AND metadata!='{}'").all().filter(m => {
+    if (!needles.some(needle => m.metadata.includes(needle))) return false;
     const meta = JSON.parse(m.metadata || "{}");
     return meta.memories?.includes(id) || meta.memoryOperation?.affected?.includes(id) ||
       meta.memoryRetrieval?.episodes?.some(s => summaryIds.has(s)) ||
@@ -187,8 +189,9 @@ export function suppressed(store, fact) {
 export async function extractFacts(store, message, signal) {
   const profile = memoryModel(store);
   if (!profile.baseUrl || !profile.model) return [];
+  const excluded = store.excludedIds ? store.excludedIds(message.session_id) : new Set();
   const recent = fitItems(store.messages(message.session_id).filter(m => m.role === "user" && m.id !== message.id && m.created_at <= message.created_at)
-    .filter(m => !m.metadata?.memoryOperation && !m.metadata?.assistantControl && !m.metadata?.healthPrivate && !store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id))
+    .filter(m => !m.metadata?.memoryOperation && !m.metadata?.assistantControl && !m.metadata?.healthPrivate && !excluded.has(m.id))
     .slice(-8).reverse().map(m => ({ id: m.id, text: m.text })), 1600).reverse();
   const facts = [];
   for (const segment of testimonyChunks(message.text)) {

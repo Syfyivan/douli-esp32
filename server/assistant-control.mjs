@@ -86,7 +86,7 @@ export class AssistantControl {
   async handle({ text, sessionId, volumeControl, signal }) {
     signal?.throwIfAborted();
     const settings = this.store.settings();
-    const last = this.store.messages(sessionId).at(-1);
+    const last = this.store.lastMessage ? this.store.lastMessage(sessionId) : this.store.messages(sessionId).at(-1);
     const pendingStyle = last?.role === "assistant" && last.metadata?.assistantControl?.target === "style" &&
       last.metadata.assistantControl.status === "clarify" && Date.now() - Date.parse(last.created_at) < 120000;
     const pendingVolume = !!last?.metadata?.assistantControl?.volume && Date.now() - Date.parse(last.created_at) < 120000;
