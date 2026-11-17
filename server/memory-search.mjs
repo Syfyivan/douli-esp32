@@ -112,7 +112,28 @@ export function memoryQuery(query) {
   return { ...range, topic, dateOnly: !!range.from && !terms(topic).length, intent: recall && !preference ? "episodes" : preference && !recall ? "facts" : "mixed" };
 }
 export class MemorySearch {
-  constructor(store, dependencies = {}) { this.store = store; this.embed = dependencies.embed || embed; this.rerank = dependencies.rerank || rerank; this.verify = dependencies.verify || complete; this.lastError = null; }
+  constructor(store, dependencies = {}) {
+    this.store = store; this.embed = dependencies.embed || embed; this.rerank = dependencies.rerank || rerank;
+    this.verify = dependencies.verify || complete; this.lastError = null; this.vectorCache = new Map();
+  }
+  sharedQueryVector(query, signal) {
+    const inflight = new Map();
+    return profile => {
+      const id = `${modelKey(profile)}:${profile.apiKey || ""}`;
+      if (!inflight.has(id)) {
+        const timeout = AbortSignal.timeout(this.store.settings().memory.queryTimeoutMs);
+        inflight.set(id, this.embed(profile, [query.slice(0, 3000)], signal ? AbortSignal.any([signal, timeout]) : timeout).then(v => v[0]));
+      }
+      return inflight.get(id);
+    };
+  }
+  cacheVector(cacheKey, values) {
+    const typed = values instanceof Float32Array ? values : Float32Array.from(values);
+    if (this.vectorCache.has(cacheKey)) this.vectorCache.delete(cacheKey);
+    this.vectorCache.set(cacheKey, typed);
+    while (this.vectorCache.size > 4096) this.vectorCache.delete(this.vectorCache.keys().next().value);
+    return typed;
+  }
   async verifyRelevance(query, rows, getText, signal) {
     const profile = memoryModel(this.store), candidates = rows.filter(r => !r.lexical).slice(0, 12);
     if (!candidates.length || !profile.baseUrl || !profile.model) return { items: rows, mode: "" };
@@ -165,31 +186,52 @@ export class MemorySearch {
       const batch = missing.slice(start, start + 16).filter(d => current.get(`${d.kind}:${d.id}`) === d.contentHash);
       if (!batch.length) continue;
       const vectors = await this.embed(profile, batch.map(d => d.text.slice(0, 6000)), signal);
+      if (!Array.isArray(vectors) || vectors.length !== batch.length) throw new Error("向量服务返回数量不符");
       signal?.throwIfAborted();
       if (this.store.closed || !sameProfile()) break;
       current = new Map(this.documents().map(d => [`${d.kind}:${d.id}`, hash(d.text)]));
-      for (let i = 0; i < batch.length; i++) {
-        const d = batch[i];
-        if (current.get(`${d.kind}:${d.id}`) !== d.contentHash) continue;
-        write.run(d.kind, d.id, d.contentHash, key, JSON.stringify(vectors[i]));
-        indexed++;
+      this.store.db.exec("SAVEPOINT vector_batch");
+      try {
+        for (let i = 0; i < batch.length; i++) {
+          const d = batch[i];
+          if (current.get(`${d.kind}:${d.id}`) !== d.contentHash) continue;
+          write.run(d.kind, d.id, d.contentHash, key, JSON.stringify(vectors[i]));
+          this.cacheVector(`${d.kind}:${d.id}:${key}:${d.contentHash}`, vectors[i]);
+          indexed++;
+        }
+        this.store.db.exec("RELEASE vector_batch");
+      } catch (error) {
+        this.store.db.exec("ROLLBACK TO vector_batch; RELEASE vector_batch");
+        throw error;
       }
     }
     return { indexed, configured: true };
   }
-  async rank(query, rows, kind, getText, signal) {
+  async rank(query, rows, kind, getText, signal, { queryVector } = {}) {
     const lex = new Map(lexicalRank(query, rows, getText).map(r => [r.id, r.lexical]));
     const profile = embeddingProfile(this.store), scores = new Map();
     let mode = "keyword";
     if (profile && rows.length) {
       try {
         const key = modelKey(profile);
-        const vectors = rows.map(r => ({ row: r, vector: this.store.db.prepare("SELECT * FROM memory_vectors WHERE kind=? AND record_id=? AND model_key=? AND content_hash=?")
-          .get(kind, r.id, key, hash(getText(r))) })).filter(x => x.vector);
+        const checkMeta = this.store.db.prepare("SELECT 1 FROM memory_vectors WHERE kind=? AND record_id=? AND model_key=? AND content_hash=?");
+        const readEmbedding = this.store.db.prepare("SELECT embedding FROM memory_vectors WHERE kind=? AND record_id=? AND model_key=? AND content_hash=?");
+        const vectors = rows.map(r => {
+          const contentHash = hash(getText(r));
+          if (!checkMeta.get(kind, r.id, key, contentHash)) return null;
+          const cacheKey = `${kind}:${r.id}:${key}:${contentHash}`;
+          let parsed = this.vectorCache.get(cacheKey);
+          if (!parsed) {
+            const stored = readEmbedding.get(kind, r.id, key, contentHash);
+            if (!stored) return null;
+            parsed = this.cacheVector(cacheKey, JSON.parse(stored.embedding));
+          }
+          return { row: r, parsed };
+        }).filter(Boolean);
         if (vectors.length) {
-          const timeout = AbortSignal.timeout(this.store.settings().memory.queryTimeoutMs);
-          const [q] = await this.embed(profile, [query.slice(0, 3000)], signal ? AbortSignal.any([signal, timeout]) : timeout);
-          for (const { row, vector } of vectors) scores.set(row.id, cosine(q, JSON.parse(vector.embedding)));
+          const q = queryVector ? await queryVector(profile) : (await this.embed(profile, [query.slice(0, 3000)],
+            signal ? AbortSignal.any([signal, AbortSignal.timeout(this.store.settings().memory.queryTimeoutMs)]) : AbortSignal.timeout(this.store.settings().memory.queryTimeoutMs)))[0];
+          for (const { row, parsed } of vectors) scores.set(row.id, cosine(q, parsed));
           mode = vectors.length === rows.length ? "hybrid" : "hybrid-partial";
           this.lastError = null;
         }
@@ -217,33 +259,34 @@ export class MemorySearch {
     const verified = await this.verifyRelevance(query, ranked, getText, signal);
     ranked = verified.items; mode += verified.mode;
     // Diversify nearly identical hits instead of spending the whole prompt on repeats.
-    const selected = [];
+    const selected = [], selectedTokens = [];
     for (const row of ranked) {
       const tokens = new Set(terms(getText(row)));
-      const redundant = selected.some(s => {
-        const other = new Set(terms(getText(s)));
-        const overlap = [...tokens].filter(t => other.has(t)).length;
-        return overlap / Math.max(1, new Set([...tokens, ...other]).size) > 0.92;
+      const redundant = selectedTokens.some(other => {
+        let overlap = 0;
+        for (const t of tokens) if (other.has(t)) overlap++;
+        return overlap / Math.max(1, tokens.size + other.size - overlap) > 0.92;
       });
-      if (!redundant) selected.push(row);
+      if (!redundant) { selected.push(row); selectedTokens.push(tokens); }
     }
     return { items: selected, mode };
   }
-  async memories(query, { signal, includePending = false, limit = 12, at } = {}) {
+  async memories(query, { signal, includePending = false, limit = 12, at, queryVector } = {}) {
     const now = at || new Date().toISOString();
     const eligible = m => includePending ?
       !["superseded", "expired"].includes(m.status) : at ?
         ["active", "superseded", "expired"].includes(m.status) && (!m.valid_from || m.valid_from <= now) && (!m.valid_until || m.valid_until > now) : isCurrent(m);
     const rows = this.store.all("memories").filter(eligible);
-    const result = await this.rank(query, rows, "memory", memoryText, signal);
+    const result = await this.rank(query, rows, "memory", memoryText, signal, { queryVector });
     // Revalidate after network I/O: a deleted/corrected fact must never re-enter context.
+    const readMemory = this.store.db.prepare("SELECT * FROM memories WHERE id=?");
     result.items = result.items.filter(m => {
-      const latest = this.store.db.prepare("SELECT * FROM memories WHERE id=?").get(m.id);
+      const latest = readMemory.get(m.id);
       return latest && eligible(latest) && latest.updated_at === m.updated_at && latest.value === m.value;
     }).slice(0, limit);
     return result;
   }
-  async history(query, { signal, from, to, sessionId, limit = 8 } = {}) {
+  async history(query, { signal, from, to, sessionId, limit = 8, queryVector } = {}) {
     const inferred = dateRange(query);
     from ||= inferred.from; to ||= inferred.to;
     if ((from && !Number.isFinite(Date.parse(from))) || (to && !Number.isFinite(Date.parse(to)))) throw new Error("历史查询日期无效");
@@ -253,9 +296,10 @@ export class MemorySearch {
       .all(from || null, from || null, to || null, to || null, sessionId || null, sessionId || null)
       .filter(m => { const meta = JSON.parse(m.metadata || "{}"); return !meta.memoryOperation && !meta.assistantControl && !meta.healthPrivate; });
     const summaries = this.store.db.prepare("SELECT * FROM memory_summaries").all();
-    const matched = await this.rank(query, summaries, "summary", s => s.text, signal);
+    const matched = await this.rank(query, summaries, "summary", s => s.text, signal, { queryVector });
     const summaryIds = matched.items.slice(0, 6).map(s => s.id);
-    const evidenceIds = new Set(summaryIds.flatMap(id => this.store.db.prepare("SELECT message_id FROM summary_sources WHERE summary_id=?").all(id).map(x => x.message_id)));
+    const readSummarySources = this.store.db.prepare("SELECT message_id FROM summary_sources WHERE summary_id=?");
+    const evidenceIds = new Set(summaryIds.flatMap(id => readSummarySources.all(id).map(x => x.message_id)));
     const lex = new Map(lexicalRank(query, rows, m => m.text).map(m => [m.id, m.lexical]));
     const dateOnly = (from || to) && !terms(memoryQuery(query).topic).length;
     let candidates = rows.map(m => ({ id: m.id, sessionId: m.session_id, title: m.title, role: m.role, text: m.text, lexical: lex.get(m.id) || 0,
@@ -264,11 +308,12 @@ export class MemorySearch {
       .sort((a, b) => b.score - a.score || b.createdAt.localeCompare(a.createdAt)).slice(0, 24);
     // A multi-topic summary is a candidate source, not proof every message is relevant.
     if (!dateOnly) candidates = (await this.verifyRelevance(query, candidates, m => m.text, signal)).items;
+    const checkMessage = this.store.db.prepare("SELECT text FROM messages WHERE id=? AND NOT EXISTS(SELECT 1 FROM memory_exclusions WHERE message_id=?)");
     return candidates
-      .filter(m => this.store.db.prepare("SELECT text FROM messages WHERE id=? AND NOT EXISTS(SELECT 1 FROM memory_exclusions WHERE message_id=?)").get(m.id, m.id)?.text === m.text)
+      .filter(m => checkMessage.get(m.id, m.id)?.text === m.text)
       .slice(0, Math.min(limit, 20));
   }
-  async episodes(query, { signal, from, to, limit = 12 } = {}) {
+  async episodes(query, { signal, from, to, limit = 12, queryVector } = {}) {
     const intent = memoryQuery(query);
     from ||= intent.from; to ||= intent.to;
     if ((from && !Number.isFinite(Date.parse(from))) || (to && !Number.isFinite(Date.parse(to)))) throw new Error("经历查询日期无效");
@@ -277,17 +322,22 @@ export class MemorySearch {
       AND NOT EXISTS(SELECT 1 FROM memory_exclusions WHERE message_id=source_id) ORDER BY occurred_at DESC`)
       .all(from || null, from || null, to || null, to || null);
     const dateOnly = (from || to) && !terms(intent.topic).length;
-    const result = dateOnly ? { items: rows, mode: "date" } : await this.rank(query, rows, "episode", e => e.text, signal);
+    const result = dateOnly ? { items: rows, mode: "date" } : await this.rank(query, rows, "episode", e => e.text, signal, { queryVector });
+    const readEpisode = this.store.db.prepare("SELECT * FROM memory_episodes WHERE id=?");
     result.items = result.items.filter(e => {
-      const current = this.store.db.prepare("SELECT * FROM memory_episodes WHERE id=?").get(e.id);
+      const current = readEpisode.get(e.id);
       return current && !current.deleted && current.revision === e.revision && current.updated_at === e.updated_at && current.text === e.text;
     }).slice(0, limit);
     return result;
   }
   status() {
     const profile = embeddingProfile(this.store), docs = this.documents();
-    const ready = profile ? docs.filter(d => this.store.db.prepare("SELECT 1 FROM memory_vectors WHERE kind=? AND record_id=? AND model_key=? AND content_hash=?")
-      .get(d.kind, d.id, modelKey(profile), hash(d.text))).length : 0;
+    let ready = 0;
+    if (profile) {
+      const key = modelKey(profile);
+      const lookup = this.store.db.prepare("SELECT 1 FROM memory_vectors WHERE kind=? AND record_id=? AND model_key=? AND content_hash=?");
+      ready = docs.filter(d => lookup.get(d.kind, d.id, key, hash(d.text))).length;
+    }
     return { semanticConfigured: !!profile, embeddingModel: profile?.model || null, rerankModel: rerankProfile(this.store)?.model || null, indexed: ready, total: docs.length, degraded: this.lastError };
   }
 }

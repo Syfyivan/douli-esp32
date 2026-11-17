@@ -167,17 +167,25 @@ export async function organizeTurn(store, message, signal, options = {}) {
     // Human maintenance wins even if it happened while extraction was awaiting a model.
     // Freeze automatic episode rewrites for this source; fact extraction stays independent.
     const maintained = store.db.prepare("SELECT 1 FROM memory_episodes WHERE source_id=? AND (origin!='automatic' OR deleted=1)").get(input.current.id);
-    if (latest.memory.autoSummaries && wantEpisodes && !maintained) for (const e of episodes) {
-      const id = store.db.prepare("SELECT id FROM memory_episodes WHERE source_id=? AND text=? AND occurred_at=? AND kind=?")
-        .get(input.current.id, e.text, e.at, e.kind)?.id || randomUUID();
-      const now = new Date().toISOString();
-      store.db.prepare(`INSERT INTO memory_episodes (id,session_id,source_id,text,kind,occurred_at,ended_at,recorded_at,updated_at,topics)
-        VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-        text=excluded.text,kind=excluded.kind,occurred_at=excluded.occurred_at,ended_at=excluded.ended_at,
-        topics=excluded.topics,revision=revision+1,updated_at=excluded.updated_at`)
-        .run(id, input.current.session_id, input.current.id, e.text, e.kind, e.at, e.until, input.current.created_at, now, JSON.stringify(e.topics));
-      for (const proof of e.proof) store.db.prepare("INSERT OR IGNORE INTO episode_sources VALUES (?,?,?)").run(id, proof.messageId, proof.quote);
-      for (const m of input.inputs) store.db.prepare("INSERT OR REPLACE INTO episode_dependencies VALUES (?,?,?)").run(id,m.id,hash(m.text));
+    if (latest.memory.autoSummaries && wantEpisodes && !maintained) {
+      const keptIds = new Set();
+      for (const e of episodes) {
+        const id = store.db.prepare("SELECT id FROM memory_episodes WHERE source_id=? AND text=? AND occurred_at=? AND kind=? AND origin='automatic' AND deleted=0")
+          .get(input.current.id, e.text, e.at, e.kind)?.id || randomUUID();
+        keptIds.add(id);
+        const now = new Date().toISOString();
+        store.db.prepare(`INSERT INTO memory_episodes (id,session_id,source_id,text,kind,occurred_at,ended_at,recorded_at,updated_at,topics)
+          VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+          text=excluded.text,kind=excluded.kind,occurred_at=excluded.occurred_at,ended_at=excluded.ended_at,
+          topics=excluded.topics,revision=revision+1,updated_at=excluded.updated_at`)
+          .run(id, input.current.session_id, input.current.id, e.text, e.kind, e.at, e.until, input.current.created_at, now, JSON.stringify(e.topics));
+        store.db.prepare("DELETE FROM episode_sources WHERE episode_id=?").run(id);
+        store.db.prepare("DELETE FROM episode_dependencies WHERE episode_id=?").run(id);
+        for (const proof of e.proof) store.db.prepare("INSERT OR IGNORE INTO episode_sources VALUES (?,?,?)").run(id, proof.messageId, proof.quote);
+        for (const m of input.inputs) store.db.prepare("INSERT OR REPLACE INTO episode_dependencies VALUES (?,?,?)").run(id,m.id,hash(m.text));
+      }
+      for (const stale of store.db.prepare("SELECT id FROM memory_episodes WHERE source_id=? AND origin='automatic' AND deleted=0").all(input.current.id))
+        if (!keptIds.has(stale.id)) store.db.prepare("DELETE FROM memory_episodes WHERE id=?").run(stale.id);
     }
     store.db.exec("RELEASE memory_turn_write");
   } catch (error) { store.db.exec("ROLLBACK TO memory_turn_write; RELEASE memory_turn_write"); throw error; }

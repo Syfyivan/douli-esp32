@@ -381,8 +381,13 @@ export class ChatEngine {
               result = { mode: found.mode, memories: fitItems(found.items.map(m => ({ id: m.id, subject: m.subject, value: m.value, from: m.valid_from, until: m.valid_until, sourceId: m.source_id })), 1200) };
             } else if (call.function.name === "history_search") {
               if (typeof args.query !== "string" || args.query.length > 500) throw new Error("历史查询需要500字以内文字");
-              result = { messages: fitItems(await this.memory.search.history(args.query, { signal: currentSignal, from: args.from, to: args.to }), 1000),
-                episodes: fitItems((await this.memory.search.episodes(args.query, { signal: currentSignal, from: args.from, to: args.to })).items
+              const queryVector = this.memory.search.sharedQueryVector(args.query, currentSignal);
+              const [foundMessages, foundEpisodes] = await Promise.all([
+                this.memory.search.history(args.query, { signal: currentSignal, from: args.from, to: args.to, queryVector }),
+                this.memory.search.episodes(args.query, { signal: currentSignal, from: args.from, to: args.to, queryVector }),
+              ]);
+              result = { messages: fitItems(foundMessages, 1000),
+                episodes: fitItems(foundEpisodes.items
                   .map(e => ({ id: e.id, text: e.text, occurredAt: e.occurred_at, recordedAt: e.recorded_at, sourceId: e.source_id })), 600) };
             } else if (call.function.name === "web_search")
               result = await runSearch(args.query);

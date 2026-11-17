@@ -173,9 +173,12 @@ function migrateIncrementalMemory(db) {
     INSERT INTO memory_summary_jobs(key) VALUES('day:' || strftime('%Y-%m-%d',NEW.occurred_at,'localtime'))
       ON CONFLICT(key) DO UPDATE SET revision=revision+1;
   END;`);
-  for (const event of ["INSERT", "UPDATE"]) db.exec(`
+  for (const [event, condition] of [
+    ["INSERT", "NEW.status IN ('active','suggested') AND NEW.kind NOT IN ('state','event') AND NEW.target_id IS NULL"],
+    ["UPDATE", "NEW.status IN ('active','suggested') AND NEW.kind NOT IN ('state','event') AND NEW.target_id IS NULL AND (OLD.status NOT IN ('active','suggested') OR OLD.value != NEW.value OR OLD.subject != NEW.subject OR OLD.predicate != NEW.predicate OR OLD.valid_from IS NOT NEW.valid_from OR OLD.valid_until IS NOT NEW.valid_until OR OLD.target_id IS NOT NEW.target_id)"],
+  ]) db.exec(`
     DROP TRIGGER IF EXISTS memory_merge_${event};
-    CREATE TRIGGER memory_merge_${event} AFTER ${event} ON memories BEGIN
+    CREATE TRIGGER memory_merge_${event} AFTER ${event} ON memories WHEN ${condition} BEGIN
       INSERT INTO memory_merge_jobs(subject,predicate) VALUES(NEW.subject,NEW.predicate)
         ON CONFLICT(subject,predicate) DO UPDATE SET revision=revision+1,cursor=0;
     END;

@@ -15,9 +15,15 @@ export class MemoryService {
     this.last = null;
   }
   start() {
-    this.timer = setInterval(() => { void this.run().catch(() => {}); }, this.store.settings().memory.backgroundIntervalMs);
-    this.timer.unref();
+    this.resetInterval(this.store.settings().memory.backgroundIntervalMs);
     this.schedule();
+  }
+  resetInterval(ms) {
+    if (this.control.signal.aborted || this.intervalMs === ms) return;
+    clearInterval(this.timer);
+    this.intervalMs = ms;
+    this.timer = setInterval(() => { void this.run().catch(() => {}); }, ms);
+    this.timer.unref();
   }
   schedule() {
     if (this.control.signal.aborted || this.scheduled) return;
@@ -55,11 +61,13 @@ export class MemoryService {
       catch (error) { if (signal.aborted) throw error; report.failures++; return null; }
     };
     const settings = store.settings();
+    if (this.timer) this.resetInterval(settings.memory.backgroundIntervalMs);
     if (settings.memory.maintenance) {
       report.expired = Number(store.db.prepare("UPDATE memories SET status='expired',updated_at=? WHERE status='active' AND valid_until IS NOT NULL AND valid_until<=?").run(report.at, report.at).changes);
       store.db.prepare("DELETE FROM memory_pending WHERE expires_at<?").run(report.at);
     }
-    if (settings.privacy.autoMemory || settings.memory.autoSummaries) {
+    const modelProfile = memoryModel(store);
+    if ((settings.privacy.autoMemory || settings.memory.autoSummaries) && modelProfile.baseUrl && modelProfile.model) {
       const jobs = store.db.prepare(`SELECT j.*,m.* FROM memory_jobs j JOIN messages m ON m.id=j.message_id
         WHERE j.next_at<=? AND j.attempts<5 AND ((j.facts=1 AND ?=1) OR (j.episodes=1 AND ?=1)) ORDER BY m.created_at LIMIT 3`)
         .all(report.at, +settings.privacy.autoMemory, +settings.memory.autoSummaries);
@@ -233,14 +241,17 @@ export class MemoryService {
   async context(query, signal) {
     const s = this.store.settings(), budget = s.memory.contextTokens;
     const queryPlan = memoryQuery(query);
-    const recalled = await this.search.memories(query, { signal });
-    const experience = await this.search.episodes(query, { signal });
+    const queryVector = this.search.sharedQueryVector(query, signal);
     // Legacy summaries remain searchable, but are never injected merely because they are recent.
     const summaries = this.store.db.prepare(`SELECT * FROM memory_summaries WHERE kind='day' AND text!=''
       AND id NOT LIKE '%:episodes:%' AND (? IS NULL OR day>=?) AND (? IS NULL OR day<?) ORDER BY day DESC`).all(
       queryPlan.from || null, queryPlan.from ? localDay(new Date(queryPlan.from)) : null,
       queryPlan.to || null, queryPlan.to ? localDay(new Date(queryPlan.to)) : null);
-    const ranked = await this.search.rank(query, summaries, "summary", m => m.text, signal);
+    const [recalled, experience, ranked] = await Promise.all([
+      this.search.memories(query, { signal, queryVector }),
+      this.search.episodes(query, { signal, queryVector }),
+      this.search.rank(query, summaries, "summary", m => m.text, signal, { queryVector }),
+    ]);
     // Read current facts only after all network work, so concurrent forgetting/corrections win.
     const current = this.store.all("memories").filter(m => isCurrent(m));
     const core = fitItems([
@@ -253,10 +264,12 @@ export class MemoryService {
       name: m.name, value: m.value, validFrom: m.valid_from, validUntil: m.valid_until, sourceId: m.source_id })), Math.floor(budget * (queryPlan.intent === "episodes" ? 0.2 : 0.4)));
     const recent = ranked.items;
     const seen = new Set();
-    const episodes = fitItems([...experience.items.filter(e => this.store.db.prepare("SELECT revision FROM memory_episodes WHERE id=? AND deleted=0").get(e.id)?.revision === e.revision)
+    const checkEpisode = this.store.db.prepare("SELECT revision FROM memory_episodes WHERE id=? AND deleted=0");
+    const checkSummary = this.store.db.prepare("SELECT text FROM memory_summaries WHERE id=?");
+    const episodes = fitItems([...experience.items.filter(e => checkEpisode.get(e.id)?.revision === e.revision)
       .map(e => ({ id: e.id, day: localDay(new Date(e.occurred_at)), occurredAt: e.occurred_at, kind: e.kind, summary: e.text, sourceId: e.source_id })),
       ...recent.filter(m => !seen.has(m.id) && seen.add(m.id) &&
-      this.store.db.prepare("SELECT text FROM memory_summaries WHERE id=?").get(m.id)?.text === m.text)
+      checkSummary.get(m.id)?.text === m.text)
       .map(m => ({ id: m.id, day: m.day, summary: m.text }))], Math.floor(budget * (queryPlan.intent === "episodes" ? 0.45 : 0.25)));
     return { core, facts, episodes, intent: queryPlan.intent, mode: recalled.mode, estimatedTokens: estimateTokens({ core, facts, episodes }) };
   }

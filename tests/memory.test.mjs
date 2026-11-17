@@ -331,3 +331,35 @@ test("matching a multi-topic summary does not return unrelated source messages",
   await service.search.index();
   assert.deepEqual((await service.search.history("晚饭做什么合适")).map(m => m.id), [food.id]);
 });
+
+test("consolidation clears merge jobs in one pass, context shares query embeddings, and corrections deduplicate dictionary entries", async t => {
+  const { store } = fixture(t, { models: { memory: profile, embedding: profile } });
+  const a = putMemory(store, { name: "职业", value: "在杭州做前端开发", predicate: "occupation", pinned: true });
+  const b = putMemory(store, { name: "工作", value: "从事前端工程师工作", predicate: "occupation", status: "suggested" });
+  store.db.prepare("UPDATE memories SET status='suggested' WHERE id=?").run(b.id);
+  const session = store.session();
+  const m1 = store.message(session.id, "user", "你好豆粒，今天去跑步了");
+  const m2 = store.message(session.id, "user", "再见豆粒，明天见");
+  store.db.prepare("INSERT INTO memory_episodes (id,session_id,source_id,text,kind,occurred_at,recorded_at,updated_at) VALUES ('ep-1',?,?,?,'event',?,?,?)")
+    .run(session.id, m1.id, "今天去跑步", m1.created_at, m1.created_at, m1.created_at);
+  store.db.prepare("INSERT INTO memory_summaries VALUES ('day:2026-10-01:0','day',NULL,'2026-10-01','用户去跑步','h',?)").run(m1.created_at);
+  let mergeCalls = 0, embedCalls = 0;
+  const service = new MemoryService(store, {
+    embed: async (_p, inputs) => { embedCalls++; return inputs.map(() => [1, 0]); },
+    complete: async () => { mergeCalls++; return JSON.stringify({ duplicates: [{ keep: a.id, remove: b.id }] }); },
+  });
+  t.after(() => service.stop());
+  assert.equal(await service.consolidate(), 1);
+  assert.equal(store.db.prepare("SELECT count(*) AS n FROM memory_merge_jobs").get().n, 0, "merging must not self-invalidate its merge job");
+  assert.equal(await service.consolidate(), 0);
+  assert.equal(mergeCalls, 1);
+
+  await service.search.index();
+  embedCalls = 0;
+  await service.context("运动习惯");
+  assert.equal(embedCalls, 1, "memory, episode and summary ranking share a single query embedding per turn");
+
+  recordCorrection(store, m1.id, "你好豆梨，今天去跑步了");
+  recordCorrection(store, m2.id, "再见豆梨，明天见");
+  assert.equal(store.all("dictionary").filter(d => d.phrase === "豆粒").length, 1);
+});

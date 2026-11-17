@@ -185,31 +185,41 @@ export function recordCorrection(store, messageId, text) {
     .get(messageId, "user");
   if (!m) throw new Error("找不到可纠正的用户消息");
   const pair = correctionPair(m.text, text);
-  store.db
-    .prepare(
-      "UPDATE messages SET text=?, raw_text=COALESCE(raw_text,?) WHERE id=?",
-    )
-    .run(text, m.text, messageId);
-  // A correction invalidates automatically extracted facts from that utterance.
-  store.db
-    .prepare(
-      "UPDATE memories SET status='needs_review',updated_at=? WHERE source_id=? AND status IN ('active','suggested','conflict')",
-    )
-    .run(new Date().toISOString(), messageId);
-  if (pair)
+  store.db.exec("SAVEPOINT message_correction");
+  try {
     store.db
-      .prepare("INSERT INTO dictionary (id,phrase,replacement,status,created_at,scope) VALUES (?,?,?,?,?,?)")
-      .run(
-        randomUUID(),
-        pair.phrase,
-        pair.replacement,
-        "suggested",
-        new Date().toISOString(),
-        pair.replacement === store.settings().assistant.name ? "assistant_address" : "global",
-      );
-  store.event("transcript_corrected", {
-    messageId,
-    dictionarySuggested: !!pair,
-  });
+      .prepare(
+        "UPDATE messages SET text=?, raw_text=COALESCE(raw_text,?) WHERE id=?",
+      )
+      .run(text, m.text, messageId);
+    // A correction invalidates automatically extracted facts from that utterance.
+    store.db
+      .prepare(
+        "UPDATE memories SET status='needs_review',updated_at=? WHERE source_id=? AND status IN ('active','suggested','conflict')",
+      )
+      .run(new Date().toISOString(), messageId);
+    if (pair) {
+      const scope = pair.replacement === store.settings().assistant.name ? "assistant_address" : "global";
+      if (!store.db.prepare("SELECT 1 FROM dictionary WHERE phrase=? AND replacement=? AND scope=?").get(pair.phrase, pair.replacement, scope))
+        store.db
+          .prepare("INSERT INTO dictionary (id,phrase,replacement,status,created_at,scope) VALUES (?,?,?,?,?,?)")
+          .run(
+            randomUUID(),
+            pair.phrase,
+            pair.replacement,
+            "suggested",
+            new Date().toISOString(),
+            scope,
+          );
+    }
+    store.event("transcript_corrected", {
+      messageId,
+      dictionarySuggested: !!pair,
+    });
+    store.db.exec("RELEASE message_correction");
+  } catch (error) {
+    store.db.exec("ROLLBACK TO message_correction; RELEASE message_correction");
+    throw error;
+  }
   return pair;
 }

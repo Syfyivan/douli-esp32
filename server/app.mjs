@@ -301,7 +301,9 @@ export async function createApplication({
     const message = store.db.prepare("SELECT metadata FROM messages WHERE id=?").get(req.params.id);
     if (message && JSON.parse(message.metadata || "{}").healthPrivate)
       return reply.code(409).send({ error: "请在健康对话中补充更正，健康内容仅保存在加密档案中" });
-    return { suggestion: recordCorrection(store, req.params.id, text(req.body.text, 16000)) };
+    const suggestion = recordCorrection(store, req.params.id, text(req.body.text, 16000));
+    memory.schedule();
+    return { suggestion };
   });
   admin.post("/api/chat", async (req, reply) => {
     const content = text(req.body.text, 16000);
