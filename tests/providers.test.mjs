@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { complete, streamChat, synthesize } from "../server/providers.mjs";
+import { isVolcengineTts, VolcengineTts } from "../server/volcengine-tts.mjs";
+import { RealtimeVoice } from "../server/realtime-voice.mjs";
 import { createApplication } from "../server/app.mjs";
 import { mergeSettings } from "../server/config.mjs";
 
@@ -120,4 +122,29 @@ test("tool rounds retain streamed reasoning internally without publishing or sto
   assert.equal(requests.at(-1).thinking.type, "disabled");
   assert.equal(app.store.settings().models.daily.thinking, false);
   assert.equal(app.store.settings().models.strong, undefined);
+});
+
+test("SSE EOF without trailing newline, Volcengine resource detection, and RealtimeVoice media-clock pacing", async t => {
+  t.mock.method(globalThis, "fetch", async () => new Response('data: {"choices":[{"delta":{"content":"末尾无换行"}}]}'));
+  const chunks = [];
+  for await (const e of streamChat(profile, [])) if (e.type === "text") chunks.push(e.text);
+  assert.deepEqual(chunks, ["末尾无换行"]);
+
+  assert.equal(isVolcengineTts({ baseUrl: "https://openspeech.bytedance.com/api/v3/tts/bidirection", model: "volc.service_type.10029" }), true);
+  assert.equal(new VolcengineTts({ baseUrl: "http://127.0.0.1:9999", model: "seed-tts-2.0" }).url, "ws://127.0.0.1:9999/api/v3/tts/bidirection");
+
+  const sent = [];
+  const rt = new RealtimeVoice(profile, {});
+  rt.ready = true;
+  rt.ws = { readyState: 1, bufferedAmount: 0, send: s => sent.push(JSON.parse(s)) };
+  let fakeNow = 1000;
+  t.mock.method(performance, "now", () => fakeNow);
+  for (let tick = 0; tick < 60; tick++) {
+    // Simulate 30 ms Windows timer ticks (1.5 frames of 16kHz audio arriving per tick)
+    rt.push(Buffer.alloc(960));
+    fakeNow += 30;
+    rt.flush();
+  }
+  assert.ok(rt.input.length <= 1280, "media-clock pacing must keep uplink queue bounded despite >20ms timer ticks");
+  assert.equal(sent.filter(e => e.type === "input_audio_buffer.append").length >= 88, true);
 });

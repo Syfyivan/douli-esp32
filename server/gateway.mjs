@@ -876,6 +876,7 @@ export class VoiceConnection {
   audio(raw) {
     if (!this.hello || this.standby || !this.call.acceptingAudio || this.ws.readyState !== WebSocket.OPEN) return;
     const frame = unpackAudio(raw, this.version);
+    if (!frame.length || (this.format === "opus" && frame.length > 3828)) throw new Error("无效音频帧");
     const decoded =
       this.format === "pcm"
         ? Buffer.from(frame)
@@ -892,7 +893,12 @@ export class VoiceConnection {
       voicedFrames: this.inputAudio?.voicedFrames || 0,
       lastVoicedAt: this.inputAudio?.lastVoicedAt || null,
     };
-    if (this.realtime) { this.realtime.push(pcm); return; }
+    if (this.realtime) {
+      if (["speaking", "thinking"].includes(this.call.output) &&
+          !(this.options.browser || this.features?.aec === true || this.features?.device_aec === true)) return;
+      this.realtime.push(pcm);
+      return;
+    }
     const input = this.inputSettings();
     const voiced = input.vad === "energy" ? rms(pcm) >= input.rmsThreshold : this.speechDetector.detect(pcm, input.rmsThreshold);
     Object.assign(this.inputAudio, { vad: input.vad, threshold: input.rmsThreshold, voiced });
@@ -1092,35 +1098,36 @@ export class VoiceConnection {
       this.send({ type: "voice_mode", mode: "cascade", reason: "多人档案使用逐句声纹识别" }); return;
     }
     if (this.realtime) { this.realtime.setMuted(!this.call.acceptingAudio); return; }
-    const settings = this.store.settings();
-    const tools = this.engine.voiceTools();
-    const instructions = this.engine.systemPrompt({ settings,
-      model: settings.models.realtime.model, outputMode: "voice", nativeAudio: true,
-      tools, memoryContext: JSON.parse(this.engine.context(this.session.id)) });
-    const recent = this.store.messages(this.session.id).filter(m => !m.metadata?.healthPrivate && !m.metadata?.memoryOperation && !m.metadata?.assistantControl &&
-      !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id)).slice(-20);
-    const history = [];
-    let user;
-    for (const m of recent) {
-      if (m.role === "user") user = m;
-      else if (m.role === "assistant" && user) {
-        for (const entry of [user, m]) history.push({ id: entry.id, type: "message", role: entry.role, content: [{ type: "input_text", text: audibleContext(entry).slice(0, 1600) }] });
-        user = null;
-      }
-    }
-    const remote = this.realtime = new RealtimeVoice(settings.models.realtime, {
-      instructions, history, tools,
-      onStart: () => { this.abort(false); this.state = "listening"; this.lastSpeechAt = Date.now(); },
-      onPartial: text => { this.call.update({ input: "recognizing" }); this.lastSpeechAt = Date.now(); this.send({ type: "partial", text }); },
-      onTranscript: (text, turn) => { this.lastSpeechAt = Date.now(); void this.process(null, text, turn); },
-      onError: error => { this.abort(); this.error(error); this.close(); },
-    });
+    let remote;
     try {
+      const settings = this.store.settings();
+      const tools = this.engine.voiceTools();
+      const instructions = this.engine.systemPrompt({ settings,
+        model: settings.models.realtime.model, outputMode: "voice", nativeAudio: true,
+        tools, memoryContext: JSON.parse(this.engine.context(this.session.id)) });
+      const recent = this.store.messages(this.session.id).filter(m => !m.metadata?.healthPrivate && !m.metadata?.memoryOperation && !m.metadata?.assistantControl &&
+        !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id)).slice(-20);
+      const history = [];
+      let user;
+      for (const m of recent) {
+        if (m.role === "user") user = m;
+        else if (m.role === "assistant" && user) {
+          for (const entry of [user, m]) history.push({ id: entry.id, type: "message", role: entry.role, content: [{ type: "input_text", text: audibleContext(entry).slice(0, 1600) }] });
+          user = null;
+        }
+      }
+      remote = this.realtime = new RealtimeVoice(settings.models.realtime, {
+        instructions, history, tools,
+        onStart: () => { this.abort(false); this.state = "listening"; this.lastSpeechAt = Date.now(); },
+        onPartial: text => { this.call.update({ input: "recognizing" }); this.lastSpeechAt = Date.now(); this.send({ type: "partial", text }); },
+        onTranscript: (text, turn) => { this.lastSpeechAt = Date.now(); void this.process(null, text, turn); },
+        onError: error => { if (this.realtime === remote) this.realtime = null; this.abort(); this.error(error); this.close(); },
+      });
       remote.setMuted(!this.call.acceptingAudio);
       await remote.open();
       if (this.realtime === remote) this.send({ type: "voice_mode", mode: "realtime", reason: "实时语音已连接" });
     } catch (error) {
-      if (this.realtime === remote) { this.error(error); this.close(); }
+      if (!remote || this.realtime === remote) { this.realtime = null; this.error(error); this.close(); }
     }
   }
   asrContext() {
@@ -1288,14 +1295,9 @@ export class VoiceConnection {
       const visual = turn.guest || turn.mediation ? null : await this.requestVision(turn, signal);
       if (!active()) return;
       const speechSettings = this.store.settings();
-      if (speechSettings.input.ttsProvider === "volcengine" && !remoteTurn) {
-        const profile = speechProfile(speechSettings);
-        const key = JSON.stringify(profile);
-        if (!this.streamingTts || this.streamingTtsKey !== key) {
-          this.streamingTts?.close();
-          this.streamingTts = new VolcengineTts(profile);
-          this.streamingTtsKey = key;
-        }
+      const useStreamingTts = speechSettings.input.ttsProvider === "volcengine" && !remoteTurn;
+      let streamingProfile = null;
+      const startStreamingSpeech = () => {
         streamingSpeech = this.streamingTts.session(signal);
         const connection = this;
         async function* measured() {
@@ -1305,7 +1307,7 @@ export class VoiceConnection {
           }
           await streamingSpeech.completion;
         }
-        const audio = bufferSpeech(measured(), { sampleRate: profile.pcmSampleRate || 24000, signal, continuous: true });
+        const audio = bufferSpeech(measured(), { sampleRate: streamingProfile.pcmSampleRate || 24000, signal, continuous: true });
         speech = (async () => {
           await audio.ready;
           if (!active()) return;
@@ -1320,6 +1322,18 @@ export class VoiceConnection {
           // otherwise the next turn can remain blocked by unfinished synthesis.
           streamingSpeech.cancel();
         });
+      };
+      if (useStreamingTts) {
+        streamingProfile = speechProfile(speechSettings);
+        const key = JSON.stringify(streamingProfile);
+        if (!this.streamingTts || this.streamingTtsKey !== key) {
+          this.streamingTts?.close();
+          this.streamingTts = new VolcengineTts(streamingProfile);
+          this.streamingTtsKey = key;
+        }
+        // Warm the socket ahead of time, but start the synthesis session only
+        // when text arrives so slow search/vision/tool turns cannot hit the 20s idle timeout.
+        void this.streamingTts.open?.().catch(() => {});
       }
       const emit = (event) => {
         if (["done", "interrupted"].includes(event.type) && event.message) {
@@ -1338,12 +1352,15 @@ export class VoiceConnection {
           this.mark(turn, "firstTextMs", Date.now() - turn.lastSpeechAt);
           if (!nativeUsed) {
             if (!turn.mediation) remote?.cancel(remoteTurn);
+            if (useStreamingTts && !streamingSpeech && event.text) {
+              try { startStreamingSpeech(); } catch (error) { speechError ||= error; }
+            }
             if (streamingSpeech) {
               streamingText += event.text;
               streamingStartedAt ??= Date.now();
               this.mark(turn, "firstSegmentMs", Date.now() - turn.lastSpeechAt);
               streamingSpeech.write(event.text);
-            } else segments.push(event.text);
+            } else if (!useStreamingTts) segments.push(event.text);
           }
         }
       };

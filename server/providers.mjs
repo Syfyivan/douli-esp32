@@ -149,6 +149,23 @@ export async function* streamChat(profile, messages, signal, tools = [], toolCho
       }
     }
   }
+  pending += decoder.decode();
+  const tail = pending.trim();
+  if (tail.startsWith("data:") && tail.slice(5).trim() !== "[DONE]") {
+    const data = JSON.parse(tail.slice(5));
+    if (data.error) throw new Error(data.error.message || "模型流返回错误");
+    const delta = data.choices?.[0]?.delta;
+    if (typeof delta?.reasoning_content === "string")
+      reasoningContent = (reasoningContent || "") + delta.reasoning_content;
+    if (delta?.content) yield { type: "text", text: delta.content };
+    for (const item of delta?.tool_calls || []) {
+      const c = calls.get(item.index) || { id: "", type: "function", function: { name: "", arguments: "" } };
+      if (item.id) c.id = item.id;
+      if (item.function?.name) c.function.name += item.function.name;
+      if (item.function?.arguments) c.function.arguments += item.function.arguments;
+      calls.set(item.index, c);
+    }
+  }
   if (calls.size) yield { type: "tools", calls: [...calls.values()], reasoningContent };
 }
 export async function transcribe(profile, pcm, context, signal) {
@@ -336,10 +353,15 @@ export class LiveTranscriber {
         if (signal?.aborted) onAbort();
         else signal?.addEventListener("abort", onAbort, { once: true });
       });
-      return await Promise.race([
-        Promise.any([this.result, delayedHttp]),
-        aborted,
-      ]);
+      try {
+        return await Promise.race([
+          Promise.any([this.result, delayedHttp]),
+          aborted,
+        ]);
+      } catch (error) {
+        if (error instanceof AggregateError) throw error.errors?.[1] || error.errors?.[0] || error;
+        throw error;
+      }
     } finally {
       signal?.removeEventListener("abort", onAbort);
       clearTimeout(timer);

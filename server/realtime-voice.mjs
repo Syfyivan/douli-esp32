@@ -36,6 +36,7 @@ export class RealtimeVoice {
   constructor(profile, { instructions, tools = [], history = [], onStart, onPartial, onTranscript, onError } = {}) {
     Object.assign(this, { profile, instructions, tools, history, onStart, onPartial, onTranscript, onError });
     this.input = Buffer.alloc(0); this.rejected = new Set(); this.sequence = 0;
+    this.sendOrigin = null; this.sentFrames = 0;
     this.muted = false; this.closed = false;
   }
   async open() {
@@ -68,11 +69,14 @@ export class RealtimeVoice {
           } else this.receive(e);
         } catch (error) { fail(error); this.fail(error); }
       });
-      this.ws.on("error", () => { const error = new Error("实时语音连接失败，请检查服务地址、权限和网络"); fail(error); this.fail(error); });
+      this.ws.on("error", () => {
+        const error = new Error("实时语音连接失败，请检查服务地址、权限和网络");
+        if (this.ready) this.fail(error); else fail(error);
+      });
       this.ws.on("close", () => {
         clearInterval(this.pump); clearTimeout(this.closeTimer);
-        const error = new Error("实时语音连接已断开"); fail(error);
-        if (!this.closed) this.fail(error);
+        const error = new Error("实时语音连接已断开");
+        if (this.ready && !this.closed) this.fail(error); else fail(error);
       });
     }).catch(error => { this.close(); throw error; });
   }
@@ -90,12 +94,23 @@ export class RealtimeVoice {
   flush() {
     if (!this.ready || this.closed || this.muted) return;
     if (this.input.length < 640) {
+      if (!this.input.length) { this.sendOrigin = null; this.sentFrames = 0; }
       if (this.commitPending && !this.input.length) { this.commitPending = false; this.send({ type: "input_audio_buffer.commit" }); }
       return;
     }
-    this.send({ type: "input_audio_buffer.append", audio: this.input.subarray(0, 640).toString("base64") });
-    this.input = this.input.subarray(640);
-    if (this.commitPending && !this.input.length) { this.commitPending = false; this.send({ type: "input_audio_buffer.commit" }); }
+    const now = performance.now();
+    if (this.sendOrigin == null) { this.sendOrigin = now; this.sentFrames = 0; }
+    let count = 0;
+    while (this.input.length >= 640 && count < 4 && now >= this.sendOrigin + this.sentFrames * 20) {
+      this.send({ type: "input_audio_buffer.append", audio: this.input.subarray(0, 640).toString("base64") });
+      this.input = this.input.subarray(640);
+      this.sentFrames++;
+      count++;
+    }
+    if (!this.input.length) {
+      this.sendOrigin = null; this.sentFrames = 0;
+      if (this.commitPending) { this.commitPending = false; this.send({ type: "input_audio_buffer.commit" }); }
+    }
   }
   commit() {
     if (this.input.length % 640) this.input = Buffer.concat([this.input, Buffer.alloc(640 - this.input.length % 640)]);
@@ -105,7 +120,7 @@ export class RealtimeVoice {
   setMuted(value, force = false) {
     if (!force && this.muted === value) return;
     this.muted = value;
-    if (value) { this.input = Buffer.alloc(0); this.commitPending = false; }
+    if (value) { this.input = Buffer.alloc(0); this.commitPending = false; this.sendOrigin = null; this.sentFrames = 0; }
     if (this.ready) this.send({ type: value ? "input_audio_mute.commit" : "input_audio_unmute.commit" });
   }
   begin() {

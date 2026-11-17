@@ -54,22 +54,38 @@ const deferred = () => {
   return value;
 };
 export const isVolcengineTts = profile => {
-  try { return new URL(profile.baseUrl).hostname === "openspeech.bytedance.com" && /^seed-(tts|icl)-/.test(profile.model); }
+  try { return new URL(profile.baseUrl).hostname === "openspeech.bytedance.com" && /^(?:seed-(?:tts|icl)-|volc\.)/.test(profile.model); }
   catch { return false; }
 };
 export function speechProfile(settings) {
   return settings.input?.ttsProvider === "volcengine" ? settings.models.streamingTts : settings.models.tts;
 }
 
+function resolveTtsUrl(baseUrl) {
+  if (!baseUrl) return "wss://openspeech.bytedance.com/api/v3/tts/bidirection";
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol === "https:") parsed.protocol = "wss:";
+    else if (parsed.protocol === "http:") parsed.protocol = "ws:";
+    if (!parsed.pathname || parsed.pathname === "/") parsed.pathname = "/api/v3/tts/bidirection";
+    return parsed.href;
+  } catch {
+    return "wss://openspeech.bytedance.com/api/v3/tts/bidirection";
+  }
+}
+
 export class VolcengineTts {
   constructor(profile, { Socket = WebSocket, url, timeoutMs = 8000 } = {}) {
     this.profile = { ...profile };
     this.Socket = Socket;
-    this.url = url || "wss://openspeech.bytedance.com/api/v3/tts/bidirection";
+    this.url = url || resolveTtsUrl(profile?.baseUrl);
     this.timeoutMs = timeoutMs;
   }
   open() {
-    if (this.connection) return this.connection.promise;
+    if (this.connection && [WebSocket.CONNECTING, WebSocket.OPEN].includes(this.socket?.readyState))
+      return this.connection.promise;
+    this.socket = null;
+    this.connection = null;
     const ready = this.connection = deferred();
     if (!this.profile.apiKey || !this.profile.voice || !this.profile.model) {
       this.fail(new Error("请先配置豆包语音合成的密钥、资源 ID 和音色"));

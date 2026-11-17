@@ -5,6 +5,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { PassThrough } from "node:stream";
 import { WebSocket } from "ws";
 import { Store } from "../server/store.mjs";
 import { VoiceConnection } from "../server/gateway.mjs";
@@ -434,4 +435,39 @@ test("deleting an active session recovers cleanly on next turn or farewell, and 
   assert.equal(connection.config.volume, 0.4);
   assert.equal(connection.buffer.config.rmsThreshold, 0.09);
   assert.equal(connection.buffer.config.silenceMs, 900);
+});
+
+test("streaming TTS opens its synthesis session lazily on first delta so slow pre-answer tools never time out", async t => {
+  const { connection, store, gateway } = setup(t, { browser: true });
+  const settings = store.settings();
+  settings.input.ttsProvider = "volcengine";
+  settings.models.streamingTts = { baseUrl: "https://openspeech.bytedance.com", model: "seed-tts-2.0", voice: "v", apiKey: "k", pcmSampleRate: 16000 };
+  store.saveSettings(settings);
+  let warmed = 0, sessionOpened = 0;
+  connection.streamingTtsKey = JSON.stringify(store.settings().models.streamingTts);
+  connection.streamingTts = {
+    close() {},
+    open() { warmed++; return Promise.resolve(); },
+    session() {
+      sessionOpened++;
+      const audio = new PassThrough();
+      return {
+        audio,
+        completion: Promise.resolve(),
+        write() { audio.write(Buffer.alloc(640)); },
+        finish() { audio.end(); return Promise.resolve(); },
+        cancel() { audio.destroy(); },
+      };
+    },
+  };
+  gateway.engine.run = async ({ emit }) => {
+    assert.equal(warmed, 1);
+    assert.equal(sessionOpened, 0, "do not start the 20s synthesis session timer before first spoken text");
+    t.mock.timers.tick(25_000);
+    emit({ type: "delta", text: "检索完成后回答。" });
+    assert.equal(sessionOpened, 1);
+    return { farewell: false };
+  };
+  await connection.process(null, "帮我查资料");
+  assert.equal(sessionOpened, 1);
 });
