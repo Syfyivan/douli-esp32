@@ -64,7 +64,8 @@ public class MainActivity extends Activity {
             menu.setOnMenuItemClickListener(item -> {
                 if ("后台设置".contentEquals(item.getTitle())) startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
                 else if ("运行诊断".contentEquals(item.getTitle())) diagnostics();
-                else { loaded=false; }
+                else if (running) web.reload();
+                else { loaded = false; welcome(); }
                 return true;
             }); menu.show();
         });
@@ -165,12 +166,23 @@ public class MainActivity extends Activity {
             });
         }, "douli-health").start();
     }};
-    @Override protected void onResume() { super.onResume(); foreground = true; VoiceCallService.listener = voiceListener; main.removeCallbacks(poll); main.post(poll); web.onResume(); voiceListener.onEvent(VoiceCallService.snapshot); }
-    @Override protected void onPause() {
+    @Override protected void onStart() {
+        super.onStart();
+        foreground = true; VoiceCallService.listener = voiceListener;
+        main.removeCallbacks(poll); main.post(poll);
+        web.onResume(); voiceListener.onEvent(VoiceCallService.snapshot);
+    }
+    @Override protected void onResume() {
+        super.onResume();
+        foreground = true; VoiceCallService.listener = voiceListener;
+        main.removeCallbacks(poll); main.post(poll);
+        voiceListener.onEvent(VoiceCallService.snapshot);
+    }
+    @Override protected void onStop() {
         foreground = false; main.removeCallbacks(poll);
         web.evaluateJavascript("window.dispatchEvent(new Event('douli-background'))", null);
         try { if (ScreenShareService.current == null && new JSONObject(VoiceCallService.snapshot).optBoolean("active")) startService(new Intent(this, VoiceCallService.class).setAction("command").putExtra("command", "{\"type\":\"vision\",\"action\":\"stop\"}")); } catch (JSONException ignored) {}
-        web.onPause(); super.onPause();
+        web.onPause(); super.onStop();
     }
     @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);

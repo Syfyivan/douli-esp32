@@ -49,7 +49,7 @@ public class VoiceCallService extends Service {
     private static class Segment {
         int turn, id, totalMs = -1, lastReported = -1;
         long start = -1, written;
-        boolean started;
+        boolean started, completed;
     }
     private static class Frame {
         byte[] bytes; int offset; Segment segment;
@@ -208,17 +208,30 @@ public class VoiceCallService extends Service {
         if (!active) return;
         pump();
         if (SystemClock.elapsedRealtime() - lastProgress >= 100) { receipts(false); lastProgress = SystemClock.elapsedRealtime(); }
-        if (outputEnded && pending.isEmpty() && player != null && Integer.toUnsignedLong(player.getPlaybackHeadPosition()) >= writtenFrames && !"listening".equals(status)) { status = "listening"; publish(); }
+        if (outputEnded && pending.isEmpty() && player != null && Integer.toUnsignedLong(player.getPlaybackHeadPosition()) >= writtenFrames) {
+            receipts(false);
+            segments.clear();
+            currentSegment = null;
+            outputEnded = false;
+            if (!"listening".equals(status)) { status = "listening"; publish(); }
+        }
         worker.postDelayed(this, 20);
     }};
     private void receipts(boolean interrupted) {
         if (player == null) return;
         long head = Integer.toUnsignedLong(player.getPlaybackHeadPosition());
         for (Segment s : segments) {
+            if (interrupted && s.completed) continue;
             int played = s.start < 0 ? 0 : (int)(Math.max(0, Math.min(s.written, head - s.start)) / 16);
-            if (played <= s.lastReported && !interrupted) continue;
-            String state = interrupted ? "interrupted" : !s.started && played > 0 ? "started" : s.totalMs >= 0 && played >= s.totalMs ? "complete" : "progress";
-            if (played > 0) s.started = true;
+            boolean done = !interrupted && s.totalMs >= 0 && played >= s.totalMs;
+            if (played <= s.lastReported && !interrupted && !(done && !s.completed)) continue;
+            if (!interrupted && !s.started && played > 0) {
+                s.started = true;
+                send(json("type", "playback", "turn_id", s.turn, "segment_id", s.id, "played_ms", played, "state", "started"));
+                if (!done) { s.lastReported = played; continue; }
+            }
+            String state = interrupted ? "interrupted" : done ? "complete" : "progress";
+            if (done) s.completed = true;
             s.lastReported = played;
             send(json("type", "playback", "turn_id", s.turn, "segment_id", s.id, "played_ms", played, "state", state));
         }

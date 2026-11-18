@@ -111,7 +111,20 @@ public class EngineService extends Service {
             }
         }
         complete.createNewFile();
+        File[] children = getFilesDir().listFiles();
+        if (children != null) {
+            for (File child : children) {
+                if (child.getName().startsWith("runtime-") && !child.getName().equals(root.getName())) deleteTree(child);
+            }
+        }
         return root;
+    }
+    private static void deleteTree(File target) {
+        if (target.isDirectory()) {
+            File[] items = target.listFiles();
+            if (items != null) for (File item : items) deleteTree(item);
+        }
+        target.delete();
     }
     @Override public void onDestroy() {
         stopping = true;

@@ -228,7 +228,7 @@ index 31de205..9c396f5 100644
      }
  }
  
-@@ -841,6 +907,88 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+@@ -841,6 +907,91 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
      SetListeningMode(mode);
  }
  
@@ -240,6 +240,7 @@ index 31de205..9c396f5 100644
 +    while (audio_service_.PopPacketFromSendQueue()) {
 +    }
 +    SetDeviceState(kDeviceStateIdle);
++    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 +    audio_service_.EnableWakeWordDetection(true);
 +    if (protocol_ && protocol_->IsAudioChannelOpened())
 +        protocol_->SendStandby();
@@ -297,6 +298,7 @@ index 31de205..9c396f5 100644
 +                        app->protocol_->CloseAudioChannel();
 +                    app->pending_connected_wake_word_.clear();
 +                    app->pending_connected_listening_ = false;
++                    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 +                    app->audio_service_.EnableWakeWordDetection(true);
 +                    app->next_connection_attempt_ms_ =
 +                        esp_timer_get_time() / 1000 + app->connection_retry_seconds_ * 1000;
@@ -309,6 +311,7 @@ index 31de205..9c396f5 100644
 +        "douli_connect", 8192, this, 3, nullptr);
 +    if (created != pdPASS) {
 +        background_connecting_ = false;
++        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 +        backend_reconnect_requested_ = switching_backend;
 +        next_connection_attempt_ms_ = now + 5000;
 +    }
@@ -317,7 +320,7 @@ index 31de205..9c396f5 100644
  void Application::HandleStartListeningEvent() {
      auto state = GetDeviceState();
  
-@@ -864,6 +1012,11 @@ void Application::HandleStartListeningEvent() {
+@@ -864,6 +1015,11 @@ void Application::HandleStartListeningEvent() {
      }
  
      if (state == kDeviceStateIdle) {
@@ -329,7 +332,7 @@ index 31de205..9c396f5 100644
          if (!protocol_->IsAudioChannelOpened()) {
              SetDeviceState(kDeviceStateConnecting);
              // Schedule to let the state change be processed first (UI update)
-@@ -932,6 +1085,10 @@ void Application::HandleWakeWordDetectedEvent() {
+@@ -932,6 +1088,10 @@ void Application::HandleWakeWordDetectedEvent() {
  }
  
  void Application::BeginWakeWordInvoke(const std::string& wake_word) {
@@ -340,7 +343,7 @@ index 31de205..9c396f5 100644
      // Must run in the main task with the device in idle state
      audio_service_.EncodeWakeWord();
  
-@@ -1175,6 +1332,7 @@ void Application::Schedule(std::function<void()>&& callback) {
+@@ -1175,6 +1335,7 @@ void Application::Schedule(std::function<void()>&& callback) {
  void Application::AbortSpeaking(AbortReason reason) {
      ESP_LOGI(TAG, "Abort speaking");
      aborted_ = true;
@@ -348,7 +351,7 @@ index 31de205..9c396f5 100644
      if (protocol_) {
          protocol_->SendAbortSpeaking(reason);
      }
-@@ -1190,6 +1348,10 @@ ListeningMode Application::GetDefaultListeningMode() const {
+@@ -1190,6 +1351,10 @@ ListeningMode Application::GetDefaultListeningMode() const {
  }
  
  void Application::Reboot() {
@@ -359,7 +362,7 @@ index 31de205..9c396f5 100644
      ESP_LOGI(TAG, "Rebooting...");
      if (GetDeviceState() == kDeviceStateNotifying) {
          StopNotification();
-@@ -1206,6 +1368,8 @@ void Application::Reboot() {
+@@ -1206,6 +1371,8 @@ void Application::Reboot() {
  }
  
  bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
@@ -368,7 +371,7 @@ index 31de205..9c396f5 100644
      auto& board = Board::GetInstance();
      auto display = board.GetDisplay();
  
-@@ -1291,13 +1455,18 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
+@@ -1291,13 +1458,18 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
      } else if (state == kDeviceStateListening) {
          Schedule([this]() {
              if (protocol_) {
@@ -388,7 +391,7 @@ index 31de205..9c396f5 100644
      if (GetDeviceState() != kDeviceStateIdle) {
          return false;
      }
-@@ -1350,8 +1519,9 @@ void Application::SetAecMode(AecMode mode) {
+@@ -1350,8 +1522,9 @@ void Application::SetAecMode(AecMode mode) {
                  break;
          }
  
@@ -400,7 +403,7 @@ index 31de205..9c396f5 100644
              protocol_->CloseAudioChannel();
          }
      });
-@@ -1361,6 +1531,11 @@ void Application::PlaySound(const std::string_view& sound) { audio_service_.Play
+@@ -1361,6 +1534,11 @@ void Application::PlaySound(const std::string_view& sound) { audio_service_.Play
  
  void Application::ResetProtocol() {
      Schedule([this]() {
@@ -646,12 +649,13 @@ index 7f7582b..d12a66e 100644
              if (decoded && generation == playback_generation_ && !service_stopped_.load()) {
                  audio_playback_queue_.push_back(std::move(task));
              }
-@@ -608,6 +637,13 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
+@@ -608,6 +637,14 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
  
  bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
      std::unique_lock<std::mutex> lock(audio_queue_mutex_);
 +    const int64_t now = esp_timer_get_time();
 +    auto& d = playback_diagnostics_;
++    if (d.turn_ended) d = {};
 +    if (d.received == 0) d.first_receive_us = now;
 +    else d.max_receive_gap_us = std::max(d.max_receive_gap_us, now - d.last_receive_us);
 +    d.last_receive_us = now;
@@ -660,7 +664,7 @@ index 7f7582b..d12a66e 100644
      const uint32_t generation = playback_generation_;
      if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
          if (wait) {
-@@ -616,6 +652,7 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
+@@ -616,6 +653,7 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
                         audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
              });
          } else {
@@ -668,7 +672,7 @@ index 7f7582b..d12a66e 100644
              return false;
          }
      }
-@@ -800,6 +837,7 @@ void AudioService::ResetDecoder() {
+@@ -800,6 +838,7 @@ void AudioService::ResetDecoder() {
      {
          std::lock_guard<std::mutex> lock(audio_queue_mutex_);
          ++playback_generation_;
@@ -676,7 +680,7 @@ index 7f7582b..d12a66e 100644
          std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
          if (opus_decoder_ != nullptr) {
              esp_opus_dec_reset(opus_decoder_);
-@@ -817,6 +855,28 @@ void AudioService::ResetDecoder() {
+@@ -817,6 +856,29 @@ void AudioService::ResetDecoder() {
      }
  }
  
@@ -686,6 +690,7 @@ index 7f7582b..d12a66e 100644
 +    {
 +        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
 +        d = playback_diagnostics_;
++        playback_diagnostics_.turn_ended = true;
 +        queued = audio_decode_queue_.size() + audio_playback_queue_.size();
 +    }
 +    if (d.received == 0) return;
@@ -717,7 +722,7 @@ index f8b510f..7994990 100644
      void SetModelsList(srmodel_list_t* models_list);
  
  private:
-@@ -194,6 +195,15 @@ private:
+@@ -194,6 +195,16 @@ private:
      bool output_in_flight_ = false;
      bool playback_drained_notified_ = true;
      uint32_t playback_generation_ = 0;
@@ -729,6 +734,7 @@ index f8b510f..7994990 100644
 +        int64_t first_output_us = 0, last_output_end_us = 0;
 +        int64_t max_output_gap_us = 0, output_wait_us = 0;
 +        int64_t max_decode_us = 0, max_write_us = 0;
++        bool turn_ended = false;
 +    } playback_diagnostics_;
      // For server AEC
      FixedQueue<uint32_t, MAX_TIMESTAMPS_IN_QUEUE> timestamp_queue_;

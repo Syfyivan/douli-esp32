@@ -25,7 +25,7 @@ public class ScreenShareService extends Service {
     private ImageReader reader;
     private volatile boolean ended;
     private boolean starting;
-    private String latestFrame;
+    private Bitmap latestBitmap;
     private long capturedAt, lastCapture;
     @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onCreate() {
@@ -69,15 +69,21 @@ public class ScreenShareService extends Service {
         reader = ImageReader.newInstance(Math.max(1, (int)(width * scale)), Math.max(1, (int)(height * scale)), PixelFormat.RGBA_8888, 2);
         reader.setOnImageAvailableListener(source -> capture(source), worker);
     }
+    private void clearBitmap() {
+        if (latestBitmap != null && !latestBitmap.isRecycled()) latestBitmap.recycle();
+        latestBitmap = null;
+    }
     private void resize(int width, int height) {
         if (display == null || width <= 0 || height <= 0) return;
         ImageReader old = reader;
         makeReader(width, height);
         display.resize(reader.getWidth(), reader.getHeight(), getResources().getDisplayMetrics().densityDpi);
-        display.setSurface(reader.getSurface()); old.close(); latestFrame = null;
+        display.setSurface(reader.getSurface());
+        if (old != null) { old.setOnImageAvailableListener(null, null); old.close(); }
+        clearBitmap();
     }
     private void capture(ImageReader source) {
-        if (ended) return;
+        if (ended || source != reader) return;
         try (Image frame = source.acquireLatestImage()) {
             if (frame == null || SystemClock.elapsedRealtime() - lastCapture < 700) return;
             lastCapture = SystemClock.elapsedRealtime();
@@ -85,35 +91,41 @@ public class ScreenShareService extends Service {
             int width = frame.getWidth(), height = frame.getHeight();
             int paddedWidth = plane.getRowStride() / plane.getPixelStride();
             Bitmap padded = Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888);
-            Bitmap cropped = null;
             try {
                 int required = paddedWidth * height * 4;
                 if (bytes.remaining() < required) {
                     ByteBuffer aligned = ByteBuffer.allocate(required); aligned.put(bytes); aligned.rewind(); bytes = aligned;
                 }
                 padded.copyPixelsFromBuffer(bytes);
-                cropped = Bitmap.createBitmap(padded, 0, 0, width, height);
-                ByteArrayOutputStream output = new ByteArrayOutputStream();
-                cropped.compress(Bitmap.CompressFormat.JPEG, 72, output);
-                if (output.size() > 500000) { output.reset(); cropped.compress(Bitmap.CompressFormat.JPEG, 40, output); }
-                if (output.size() <= 500000) { latestFrame = "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP); capturedAt = System.currentTimeMillis(); }
-            } finally { if (cropped != null && cropped != padded) cropped.recycle(); padded.recycle(); }
-        } catch (Exception ignored) { latestFrame = null; }
+                Bitmap cropped = paddedWidth == width ? padded : Bitmap.createBitmap(padded, 0, 0, width, height);
+                clearBitmap();
+                latestBitmap = cropped;
+                capturedAt = System.currentTimeMillis();
+            } finally { if (padded != latestBitmap) padded.recycle(); }
+        } catch (Exception ignored) { clearBitmap(); }
     }
     static void frame(int turnId, Consumer<JSONObject> receive) {
         ScreenShareService service = current;
         if (service == null || service.ended) { receive.accept(VoiceCallService.json("type", "vision_frame", "turn_id", turnId, "unavailable", true)); return; }
         service.worker.post(() -> {
-            boolean valid = !service.ended && service.latestFrame != null && System.currentTimeMillis() - service.capturedAt < 15000;
-            receive.accept(valid ? VoiceCallService.json("type", "vision_frame", "turn_id", turnId, "source", "screen", "capturedAt", service.capturedAt, "dataUrl", service.latestFrame) : VoiceCallService.json("type", "vision_frame", "turn_id", turnId, "unavailable", true));
+            String encoded = null;
+            if (!service.ended && service.latestBitmap != null && !service.latestBitmap.isRecycled() && System.currentTimeMillis() - service.capturedAt < 15000) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                service.latestBitmap.compress(Bitmap.CompressFormat.JPEG, 72, output);
+                if (output.size() > 500000) { output.reset(); service.latestBitmap.compress(Bitmap.CompressFormat.JPEG, 40, output); }
+                if (output.size() <= 500000) encoded = "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+            }
+            receive.accept(encoded != null ? VoiceCallService.json("type", "vision_frame", "turn_id", turnId, "source", "screen", "capturedAt", service.capturedAt, "dataUrl", encoded) : VoiceCallService.json("type", "vision_frame", "turn_id", turnId, "unavailable", true));
         });
     }
     @Override public void onDestroy() {
         ended = true; if (current == this) current = null;
         VoiceCallService.screenEvent(false);
         worker.post(() -> {
-            if (display != null) display.release(); if (reader != null) reader.close(); if (projection != null) projection.stop();
-            latestFrame = null; worker.removeCallbacksAndMessages(null); thread.quitSafely();
+            if (display != null) display.release();
+            if (reader != null) { reader.setOnImageAvailableListener(null, null); reader.close(); }
+            if (projection != null) projection.stop();
+            clearBitmap(); worker.removeCallbacksAndMessages(null); thread.quitSafely();
         });
         stopForeground(STOP_FOREGROUND_REMOVE); super.onDestroy();
     }
