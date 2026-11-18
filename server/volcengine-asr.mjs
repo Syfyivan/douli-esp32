@@ -101,6 +101,14 @@ export function identifySpeaker(result, settings, audioBytes) {
   if (new Set(people).size !== 1) return unknown("mixed_speakers");
   return { status: "matched", method: "voiceprint", personId: people[0] };
 }
+export function resolveAsrUrl(baseUrl) {
+  const url = new URL(baseUrl);
+  if (!["https:", "http:", "wss:", "ws:"].includes(url.protocol) || url.username || url.password)
+    throw new Error("无效的火山流式识别服务地址");
+  if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol === "http:") url.protocol = "ws:";
+  return url;
+}
 export class VolcengineTranscriber {
   constructor(settings, context, onPartial = () => {}) {
     const profile = settings.models.streamingAsr;
@@ -111,8 +119,7 @@ export class VolcengineTranscriber {
     this.result = new Promise((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
     this.result.catch(() => {});
     const corpus = asrCorpus(settings, context);
-    const url = new URL(profile.baseUrl);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const url = resolveAsrUrl(profile.baseUrl);
     this.socket = new WebSocket(url, { headers: { "X-Api-Key": profile.apiKey, "X-Api-Resource-Id": profile.model, "X-Api-Connect-Id": randomUUID() }, handshakeTimeout: 5000, maxPayload: 1024 * 1024 });
     this.socket.on("open", () => {
       if (this.closed) return;
@@ -145,11 +152,14 @@ export class VolcengineTranscriber {
               if (id == null) return "missing";
               if (settings.people?.members?.some(p => p.voiceName === id || p.voiceId === id)) return "registered";
               return /^\d{1,3}$/.test(String(id)) ? `anonymous:${id}` : "unregistered";
-            }), candidates: utterances.slice(0, 12).map(u => (Array.isArray(u.attributes?.voiceprint_matches)
-              ? u.attributes.voiceprint_matches : []).slice(0, 10).map(match => ({
-              personId: settings.people?.members?.find(p => p.voiceId === match.id && p.voiceName === match.name)?.personId || null,
-              similarity: typeof match.similarity === "number" && Number.isFinite(match.similarity) ? match.similarity : null,
-            }))) };
+            }), candidates: utterances.slice(0, 12).map(u => {
+              let attributes = u.attributes;
+              if (typeof attributes === "string") { try { attributes = JSON.parse(attributes); } catch { attributes = null; } }
+              return (Array.isArray(attributes?.voiceprint_matches) ? attributes.voiceprint_matches : []).slice(0, 10).map(match => ({
+                personId: settings.people?.members?.find(p => p.voiceId === match.id && p.voiceName === match.name)?.personId || null,
+                similarity: typeof match.similarity === "number" && Number.isFinite(match.similarity) ? match.similarity : null,
+              }));
+            }) };
           this.resolve(this.text);
         }
       } catch (error) { this.reject(error); this.close(); }

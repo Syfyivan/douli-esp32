@@ -148,3 +148,21 @@ test("SSE EOF without trailing newline, Volcengine resource detection, and Realt
   assert.ok(rt.input.length <= 1280, "media-clock pacing must keep uplink queue bounded despite >20ms timer ticks");
   assert.equal(sent.filter(e => e.type === "input_audio_buffer.append").length >= 88, true);
 });
+
+test("Volcengine ASR and settings preserve wss:// endpoints without downgrading to cleartext ws://", async () => {
+  const { resolveAsrUrl } = await import("../server/volcengine-asr.mjs");
+  const { defaults, mergeSettings, validateSettings } = await import("../server/config.mjs");
+  assert.equal(resolveAsrUrl("wss://openspeech.bytedance.com/api/v3/sauc/bigmodel").protocol, "wss:");
+  assert.equal(resolveAsrUrl("https://openspeech.bytedance.com/api/v3/sauc/bigmodel").protocol, "wss:");
+  assert.equal(resolveAsrUrl("ws://127.0.0.1:9000/sauc").protocol, "ws:");
+  assert.throws(() => resolveAsrUrl("https://user:secret@openspeech.bytedance.com/api/v3/sauc/bigmodel"));
+  const configured = mergeSettings(defaults, {
+    models: {
+      streamingAsr: { baseUrl: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel", model: "volc.seedasr.sauc.duration", apiKey: "k" },
+      streamingTts: { baseUrl: "wss://openspeech.bytedance.com/api/v3/tts/bidirection", model: "seed-tts-2.0", apiKey: "k" },
+      realtime: { baseUrl: "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue", model: "1.2.6.1", apiKey: "k" },
+    },
+  });
+  assert.doesNotThrow(() => validateSettings(configured));
+  assert.throws(() => validateSettings(mergeSettings(defaults, { models: { daily: { baseUrl: "wss://api.deepseek.com" } } })));
+});

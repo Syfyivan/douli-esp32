@@ -173,8 +173,9 @@ export function validateSettings(s) {
       m.voice.length > 256
     )
       throw new Error("无效的模型设置");
-    if (m.baseUrl && !/^https?:\/\//i.test(m.baseUrl))
-      throw new Error("模型地址需要以 http:// 或 https:// 开头");
+    const wsModel = ["streamingAsr", "streamingTts", "realtime"].includes(key);
+    if (m.baseUrl && !(wsModel ? /^(?:https?|wss?):\/\//i : /^https?:\/\//i).test(m.baseUrl))
+      throw new Error(wsModel ? "语音流服务地址需要以 https://、wss://、http:// 或 ws:// 开头" : "模型地址需要以 http:// 或 https:// 开头");
     if (![8000, 16000, 24000, 32000, 44100, 48000].includes(m.pcmSampleRate))
       throw new Error("无效的合成采样率");
   }

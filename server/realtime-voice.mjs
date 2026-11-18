@@ -43,9 +43,10 @@ export class RealtimeVoice {
     if (!this.profile?.baseUrl || !this.profile.apiKey || !this.profile.model)
       throw new Error("请先配置火山全双工模型、地址和 API Key");
     const url = new URL(this.profile.baseUrl);
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password)
+    if (!["https:", "http:", "wss:", "ws:"].includes(url.protocol) || url.username || url.password)
       throw new Error("无效的全双工服务地址");
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    if (url.protocol === "https:") url.protocol = "wss:";
+    else if (url.protocol === "http:") url.protocol = "ws:";
     this.ws = new WebSocket(url, { headers: { "X-Api-Key": this.profile.apiKey }, handshakeTimeout: 5000, maxPayload: 2 * 1024 * 1024 });
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => fail(new Error("实时语音会话建立超时")), 8000);

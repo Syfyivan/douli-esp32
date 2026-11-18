@@ -93,4 +93,10 @@ test("failed prewarm is retried on wake and invalidation cancels an old request"
   assert.equal(cache.snapshot().state, "ready");
   cache.close();
   await cache.warm(config); assert.equal(calls, 4);
+  const afterClose = await collect(cache.source(config, new AbortController().signal));
+  assert.equal(afterClose.length, 640, "fallback after close must use injected synthesize implementation");
+  assert.equal(calls, 5);
+  const blank = settings(); blank.assistant.greeting = "";
+  assert.equal((await collect(cache.source(blank, new AbortController().signal))).length, 0);
+  assert.equal(calls, 5, "blank greeting must not synthesize empty audio");
 });

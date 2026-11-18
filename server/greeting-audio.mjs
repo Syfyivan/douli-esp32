@@ -55,9 +55,11 @@ export class GreetingAudio {
   source(settings, signal) {
     const entry = this.prepare(settings, true);
     const cacheHit = !!entry?.done && !entry.error;
+    const synthesize = this.synthesize;
     const audio = (async function* () {
       if (!entry) {
-        yield* streamSpeech(speechProfile(settings), settings.assistant.greeting, signal);
+        if (!settings.assistant.greeting) return;
+        yield* synthesize(speechProfile(settings), settings.assistant.greeting, signal);
         return;
       }
       let index = 0;
