@@ -24,6 +24,9 @@ export async function controlSpeaker(connection, operation, signal) {
   const previous = hardware ? speakerVolume(await call("self.get_device_status")) : Math.round(connection.config.volume * 100);
   const label = hardware ? "扬声器音量" : "播放音量";
   if (operation.mode === "query") return { status: "read", value: previous, hardware, text: `这台音箱的${label}是百分之${previous}。` };
+  if (!["set", "delta", "unmute"].includes(operation?.mode) ||
+      (operation.mode !== "unmute" && !Number.isInteger(operation.value)))
+    throw new Error("无效的音量");
   const lastKey = hardware ? "lastHardwareVolume" : "lastPlaybackVolume";
   const value = Math.max(0, Math.min(100, operation.mode === "set" ? operation.value : operation.mode === "delta"
     ? previous + operation.value : previous || metadata().voiceControl?.[lastKey] || 50));

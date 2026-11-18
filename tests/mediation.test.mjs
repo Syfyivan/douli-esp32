@@ -26,6 +26,8 @@ test("only a complete invitation starts a case; roles and confirmations are expl
   assert.match(await say("不该收的原话", "bob"), /分开说/);
   assert.match(await room.reply("同时说的话", settings, { reason: "mixed_speakers" }), /归属不清/);
   await say("我说错了", "alice"); await say("我的修订", "alice");
+  assert.match(await say("请判断", "alice"), /本人说“第一位确认”/);
+  assert.equal(room.case.draft, "我的修订", "premature judge command must not overwrite draft statement");
   assert.match(await say("第二位确认", "bob"), /轮到第一位/);
   await say("第一位确认", "alice");
   assert.deepEqual(room.case.statements, { A: "我的修订" });

@@ -24,7 +24,7 @@ export async function guestReply(settings, text, signal, emit = () => {}) {
   for await (const event of streamChat(chatProfile(settings), messages, signal)) {
     signal?.throwIfAborted();
     if (event.type === "text" && event.text) {
-      received = true;
+      if (event.text.trim()) received = true;
       emit({ type: "delta", text: event.text });
     }
   }

@@ -104,6 +104,8 @@ test("hardware volume is read before adjustment, verified afterwards, bounded, a
   const fallback = await controlSpeaker(connection, { mode: "set", value: 35 });
   assert.equal(fallback.hardware, false); assert.equal(connection.config.volume, 0.35);
   assert.equal(JSON.parse(store.db.prepare("SELECT metadata FROM devices WHERE id=?").get(id).metadata).config.volume, 0.35);
+  for (const invalid of [{ mode: "set", value: null }, { mode: "set", value: "" }, { mode: "set", value: 100.5 }, { mode: "unknown", value: 50 }])
+    await assert.rejects(controlSpeaker(connection, invalid), /无效的音量/);
 });
 
 test("chat applies controls before model routing, resumes style clarification and excludes them from personal memory", async t => {

@@ -38,8 +38,11 @@ export class Mediation {
     const profile = chatProfile(settings);
     if (!this.case) {
       if (!profile.baseUrl || !profile.model) return "请先在设置的模型连接里配置对话模型，再说“帮我们评评理”。";
+      let host;
+      try { host = new URL(profile.baseUrl).hostname; } catch { return "对话模型地址格式无效，请先在设置的模型连接里检查配置。"; }
+      if (!host) return "对话模型地址格式无效，请先在设置的模型连接里检查配置。";
       this.case = { phase: "consent", role: "A", members: {}, statements: {}, notes: [], profile: { model: profile.model, baseUrl: profile.baseUrl } };
-      return `本次两人轮流说，音箱会当面复述。语音使用已配置的识别和合成服务。双方确认后，陈述会交给 ${new URL(profile.baseUrl).hostname} 的 ${profile.model} 评理。任何人都能说“结束评理”。第一位愿意参加，请说“第一位同意”。`;
+      return `本次两人轮流说，音箱会当面复述。语音使用已配置的识别和合成服务。双方确认后，陈述会交给 ${host} 的 ${profile.model} 评理。任何人都能说“结束评理”。第一位愿意参加，请说“第一位同意”。`;
     }
     const c = this.case;
     if (/^(?:结束评理|取消评理|退出评理|停止评理|取消|退出|不同意|我不同意|我不同意参加|我不参加|我不同意提交)$/.test(cmd)) {
@@ -96,7 +99,7 @@ export class Mediation {
       c.phase = "ready";
       return "两位的陈述都已确认。准备好后说“请评理”，也可以先更正。";
     }
-    if (/^(?:第[一二]位)?(?:确认|同意)$|^(?:请评理|开始判断|可以评理了)$/.test(cmd) || requestsMediation(text, settings.assistant.name))
+    if (!cmd || /^(?:第[一二]位)?(?:确认|同意)$|^(?:请评理|开始判断|请判断|可以评理了|重听判断)$/.test(cmd) || requestsMediation(text, settings.assistant.name))
       return c.phase === "confirm" ? `请本人说“${who}确认”，或重新讲一遍。` : `请${who}先讲自己的说法。`;
     if (text.length > 600) return "这一段太长，请用六百字以内重新讲，我再复述。";
     if (id && !c.members[c.role]) c.members[c.role] = id;
@@ -112,7 +115,7 @@ export class Mediation {
         { role: "user", content: JSON.stringify({ statements: c.statements, clarifications: c.notes, canAsk }) },
       ], signal, { max_tokens: 800 });
       signal?.throwIfAborted();
-      if (this.case !== c) return "";
+      if (this.case !== c || c.phase !== "ready") return "";
       const result = JSON.parse(raw.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/gi, ""));
       if (!["verdict", "question", "stop"].includes(result.kind) || typeof result.text !== "string" || !result.text.trim() || result.text.length > 800) throw new Error("invalid result");
       if (result.kind === "stop") { this.reset(); return "这次共同评理已停止。请先确保人身安全，必要时向可信任的人或当地紧急服务求助。"; }
@@ -125,6 +128,7 @@ export class Mediation {
       return `${c.verdict} 如果事实有误，可以更正任一位的陈述，或说“结束评理”。`;
     } catch {
       signal?.throwIfAborted();
+      if (this.case !== c) return "";
       return "这次没有取得有效判断。已确认的陈述还在，可以再说“请评理”或“结束评理”。";
     }
   }

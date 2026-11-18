@@ -362,4 +362,17 @@ test("consolidation clears merge jobs in one pass, context shares query embeddin
   recordCorrection(store, m1.id, "你好豆梨，今天去跑步了");
   recordCorrection(store, m2.id, "再见豆梨，明天见");
   assert.equal(store.all("dictionary").filter(d => d.phrase === "豆粒").length, 1);
+
+  const { memoryIntent, MemoryDialogue } = await import("../server/memory-dialogue.mjs");
+  assert.equal(memoryIntent("请你记住我不吃花生"), "remember");
+  assert.equal(memoryIntent("麻烦你忘掉花生。"), "forget");
+  const foodMem = putMemory(store, { name: "过敏", value: "不吃花生", predicate: "food:花生" });
+  const dialogue = new MemoryDialogue(service);
+  const forgetMsg = store.message(session.id, "user", "豆梨，忘掉花生。");
+  const proposal = await dialogue.handle(forgetMsg);
+  assert.equal(proposal.operation, "propose");
+  const confirmMsg = store.message(session.id, "user", "确认");
+  const forgotten = await dialogue.handle(confirmMsg);
+  assert.equal(forgotten.operation, "forget");
+  assert.deepEqual(forgotten.affected, [foodMem.id]);
 });

@@ -2,8 +2,9 @@ import { extractFacts, putMemory, forgetMemory, hash, canonicalFact, isCurrent }
 
 const affirmative = /^(确认|确认记住|确认修改|确认更正|确认删除|确认忘记|确认替换|是的|没错|对的|好的|好|可以|记住吧|删除吧)[。！!，,\s]*$/;
 const negative = /^(取消|算了|不用了|先不|不要|不确认|取消修改|取消删除|取消记忆)[。！!，,\s]*$/;
+const stripPrefix = text => text.trim().replace(/^(?:豆梨[，,、\s]*)?(?:请你?|帮我|麻烦你?)?\s*/, "");
 export function memoryIntent(text) {
-  const content = text.trim().replace(/^(?:豆梨[，,、\s]*)?(?:请|请你|帮我|麻烦你)?\s*/, "");
+  const content = stripPrefix(text);
   if (/^(?:不要|不用|别|假如|假设|如果)|怎么|如何|能不能|可以吗/.test(content)) return null;
   if (/^(?:记住|记一下|记下|记着|以后记得)/.test(content)) return "remember";
   if (/^(?:更正|纠正|修改|更新)(?:一下)?(?:我的|这条|之前的)?记忆/.test(content) || /^把.+记忆.+改(?:成|为)/.test(content)) return "correct";
@@ -43,10 +44,13 @@ export class MemoryDialogue {
         const old = canonicalFact(m); return old.subject === f.subject && old.predicate === f.predicate;
       }));
     } else {
-      const query = message.text.replace(/^(?:请|帮我)?(?:忘掉|忘记|删除|确认记住|接受)(?:一下)?(?:关于)?/, "").replace(/(?:的记忆|这条记忆)[。！!]*$/, "").trim();
+      const query = stripPrefix(message.text)
+        .replace(/^(?:忘掉|忘记|删除|确认记住|接受)(?:一下)?(?:关于)?/, "")
+        .replace(/(?:的记忆|这条记忆)?[。！!？?\s]*$/, "").trim();
       if (!query || /^(那个|这个|那件事|这件事|它|吧|记忆)$/.test(query))
         return { text: "请说清要处理哪条记忆，例如：忘掉关于香菜的饮食偏好。", operation: "clarify" };
-      if (/^(全部|所有)(?:记忆)?[。！!]*$/.test(query) && intent === "forget") targets = store.all("memories");
+      const forgetAll = intent === "forget" && /^(全部|所有)(?:记忆)?$/.test(query);
+      if (forgetAll) targets = store.all("memories");
       else if (/刚才那条|刚刚那条/.test(query)) {
         targets = store.db.prepare(`SELECT DISTINCT m.* FROM memories m JOIN memory_evidence e ON e.memory_id=m.id
           JOIN messages s ON s.id=e.message_id WHERE s.session_id=? AND m.status!='superseded' ORDER BY m.updated_at DESC LIMIT 1`).all(sessionId);
@@ -57,7 +61,7 @@ export class MemoryDialogue {
       }
       if (intent === "approve") targets = targets.filter(m => ["suggested", "conflict", "needs_review"].includes(m.status));
       if (!targets.length) return { text: "没有找到对应的记忆。这次没有修改，可以再说一下具体内容。", operation: "clarify" };
-      if (targets.length > 1 && !/全部|所有/.test(query)) return {
+      if (targets.length > 1 && !forgetAll) return {
         text: `找到了几条可能的记忆：${targets.slice(0, 3).map(m => m.value).join("；")}。请明确说要处理哪一条。`, operation: "clarify",
       };
       if (intent === "forget") {
@@ -85,9 +89,9 @@ export class MemoryDialogue {
     if (!source || hash(source.text) !== pending.sourceHash || targets.some((t, i) => !t || hash(t) !== pending.targets[i].version))
       return { text: "相关记忆或原话已经变化，这次没有执行。请重新提出修改。", operation: "stale" };
     // Detect new conflicting facts created by another session after the proposal.
-    const proposedKeys = pending.facts.map(canonicalFact);
+    const proposedKeys = (pending.action === "approve" ? targets : pending.facts).map(canonicalFact);
     const knownIds = new Set(pending.targets.map(t => t.id));
-    if (store.all("memories").some(m => isCurrent(m) && !knownIds.has(m.id) && proposedKeys.some(k => {
+    if (proposedKeys.length && store.all("memories").some(m => isCurrent(m) && !knownIds.has(m.id) && proposedKeys.some(k => {
       const f = canonicalFact(m); return f.subject === k.subject && f.predicate === k.predicate;
     }))) return { text: "这项资料刚有新的记忆，请重新提出修改，我会先核对。", operation: "stale" };
     const results = [];
@@ -98,6 +102,7 @@ export class MemoryDialogue {
       // Keep the management request and reply out of future recall and summaries.
       for (const id of [source.id, message.id]) store.db.prepare("INSERT OR IGNORE INTO memory_exclusions VALUES (?)").run(id);
       store.db.exec("COMMIT");
+      this.service.schedule();
       return { text: "已忘掉对应记忆，并清理相关摘要。原始聊天仍保留在聊天记录中，不再用于这部分记忆检索。", operation: "forget", affected: targets.map(m => m.id) };
     }
     if (pending.action === "approve") {
