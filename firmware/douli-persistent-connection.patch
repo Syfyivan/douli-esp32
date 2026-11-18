@@ -103,8 +103,8 @@ index 31de205..9c396f5 100644
      protocol_->OnConnected([this]() { DismissAlert(); });
  
      protocol_->OnNetworkError([this](const std::string& message) {
-+        // Retry a background connection quietly; waking explicitly still shows errors.
-+        if (background_connecting_)
++        // Suppress errors during background retries or while fallback URLs remain.
++        if (background_connecting_ || protocol_->IsFallbackPending())
 +            return;
          last_error_message_ = message;
          xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
@@ -121,10 +121,11 @@ index 31de205..9c396f5 100644
  
      protocol_->OnAudioChannelClosed([this, &board]() {
 -        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-+        board.SetPowerSaveLevel(background_connecting_ ? PowerSaveLevel::PERFORMANCE
-+                                                       : PowerSaveLevel::LOW_POWER);
-         Schedule([this]() {
-+            if (background_connecting_)
+-        Schedule([this]() {
++        const bool retrying = background_connecting_ || protocol_->IsFallbackPending();
++        board.SetPowerSaveLevel(retrying ? PowerSaveLevel::PERFORMANCE : PowerSaveLevel::LOW_POWER);
++        Schedule([this, retrying]() {
++            if (retrying || background_connecting_)
 +                return;
              auto display = Board::GetInstance().GetDisplay();
              display->SetChatMessage("system", "");
@@ -1490,24 +1491,37 @@ index 124d333..a18a8c9 100644
  #ifdef SOC_HMAC_SUPPORTED
  #include <esp_hmac.h>
  #endif
-@@ -26,6 +27,25 @@
+@@ -26,6 +27,38 @@
  
  #define TAG "Ota"
  
 +namespace {
++__thread const std::string* g_target_url = nullptr;
++
++struct ScopedTargetUrl {
++    const std::string* previous;
++    explicit ScopedTargetUrl(const std::string& url) : previous(g_target_url) {
++        g_target_url = &url;
++    }
++    ~ScopedTargetUrl() { g_target_url = previous; }
++};
++
 +// Pairing credentials may only accompany HTTPS discovery at the already
 +// provisioned WSS authority. Never send them to an HTTP or unrelated OTA URL.
 +std::string SecureAuthority(const std::string& url, const std::string& scheme) {
 +    if (!url.starts_with(scheme)) {
 +        return "";
 +    }
-+    auto end = url.find('/', scheme.size());
++    auto end = url.find_first_of("/?#", scheme.size());
 +    auto authority = url.substr(scheme.size(),
 +                                end == std::string::npos ? std::string::npos : end - scheme.size());
 +    if (authority.find_first_not_of(
 +            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:") !=
 +        std::string::npos) {
 +        return "";
++    }
++    if (authority.size() > 4 && authority.ends_with(":443")) {
++        authority.resize(authority.size() - 4);
 +    }
 +    return authority;
 +}
@@ -1516,7 +1530,7 @@ index 124d333..a18a8c9 100644
  Ota::Ota() {
  #ifdef ESP_EFUSE_BLOCK_USR_DATA
      // USER_DATA may contain board metadata instead of a textual serial number.
-@@ -50,8 +70,7 @@ Ota::Ota() {
+@@ -50,8 +83,7 @@ Ota::Ota() {
  #endif
  }
  
@@ -1526,7 +1540,7 @@ index 124d333..a18a8c9 100644
  
  std::string Ota::GetCheckVersionUrl() {
      Settings settings("wifi", false);
-@@ -72,16 +91,28 @@ std::unique_ptr<Http> Ota::SetupHttp() {
+@@ -72,16 +104,29 @@ std::unique_ptr<Http> Ota::SetupHttp() {
      http->SetHeader("Client-Id", board.GetUuid());
      if (has_serial_number_) {
          http->SetHeader("Serial-Number", serial_number_.c_str());
@@ -1539,7 +1553,8 @@ index 124d333..a18a8c9 100644
      http->SetHeader("Content-Type", "application/json");
  
 +    Settings websocket("websocket", false);
-+    auto ota_authority = SecureAuthority(GetCheckVersionUrl(), "https://");
++    const std::string target_url = g_target_url ? *g_target_url : GetCheckVersionUrl();
++    auto ota_authority = SecureAuthority(target_url, "https://");
 +    auto ws_authority = SecureAuthority(websocket.GetString("url"), "wss://");
 +    auto token = websocket.GetString("token");
 +    if (!ota_authority.empty() && ota_authority == ws_authority && !token.empty()) {
@@ -1557,7 +1572,7 @@ index 124d333..a18a8c9 100644
   * Specification: https://ccnphfhqs21z.feishu.cn/wiki/FjW6wZmisimNBBkov6OcmfvknVd
   */
  NetworkResult<> Ota::CheckVersion() {
-@@ -92,6 +123,14 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -92,6 +137,14 @@ NetworkResult<> Ota::CheckVersion() {
      current_version_ = app_desc->version;
      ESP_LOGI(TAG, "Current version: %s", current_version_.c_str());
  
@@ -1572,7 +1587,7 @@ index 124d333..a18a8c9 100644
      std::string url = GetCheckVersionUrl();
      if (url.length() < 10) {
          ESP_LOGE(TAG, "Check version URL is not properly set");
-@@ -125,8 +164,8 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -125,8 +178,8 @@ NetworkResult<> Ota::CheckVersion() {
      // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
      // Parse the JSON response and check if the version is newer
      // If it is, set has_new_version_ to true and store the new version and URL
@@ -1583,7 +1598,7 @@ index 124d333..a18a8c9 100644
      if (root == NULL) {
          ESP_LOGE(TAG, "Failed to parse JSON response");
          return std::unexpected(NetworkError::ProtocolError());
-@@ -134,7 +173,7 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -134,7 +187,7 @@ NetworkResult<> Ota::CheckVersion() {
  
      has_activation_code_ = false;
      has_activation_challenge_ = false;
@@ -1592,7 +1607,7 @@ index 124d333..a18a8c9 100644
      if (cJSON_IsObject(activation)) {
          cJSON* message = cJSON_GetObjectItem(activation, "message");
          if (cJSON_IsString(message)) {
-@@ -157,11 +196,11 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -157,11 +210,11 @@ NetworkResult<> Ota::CheckVersion() {
      }
  
      has_mqtt_config_ = false;
@@ -1607,7 +1622,7 @@ index 124d333..a18a8c9 100644
              if (cJSON_IsString(item)) {
                  if (settings.GetString(item->string) != item->valuestring) {
                      settings.SetString(item->string, item->valuestring);
-@@ -178,11 +217,11 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -178,11 +231,11 @@ NetworkResult<> Ota::CheckVersion() {
      }
  
      has_websocket_config_ = false;
@@ -1622,7 +1637,7 @@ index 124d333..a18a8c9 100644
              if (cJSON_IsString(item)) {
                  if (settings.GetString(item->string) != item->valuestring) {
                      settings.SetString(item->string, item->valuestring);
-@@ -199,22 +238,22 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -199,22 +252,22 @@ NetworkResult<> Ota::CheckVersion() {
      }
  
      has_server_time_ = false;
@@ -1653,7 +1668,7 @@ index 124d333..a18a8c9 100644
              tv.tv_usec = (suseconds_t)((long long)ts % 1000) * 1000;  // 剩余的毫秒转换为微秒
              settimeofday(&tv, NULL);
              has_server_time_ = true;
-@@ -224,13 +263,13 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -224,13 +277,13 @@ NetworkResult<> Ota::CheckVersion() {
      }
  
      has_new_version_ = false;
@@ -1670,7 +1685,7 @@ index 124d333..a18a8c9 100644
          if (cJSON_IsString(url)) {
              firmware_url_ = url->valuestring;
          }
-@@ -244,7 +283,7 @@ NetworkResult<> Ota::CheckVersion() {
+@@ -244,7 +297,7 @@ NetworkResult<> Ota::CheckVersion() {
                  ESP_LOGI(TAG, "Current is the latest version");
              }
              // If the force flag is set to 1, the given version is forced to be installed
@@ -1679,7 +1694,7 @@ index 124d333..a18a8c9 100644
              if (cJSON_IsNumber(force) && force->valueint == 1) {
                  has_new_version_ = true;
              }
-@@ -277,7 +316,8 @@ void Ota::MarkCurrentVersionValid() {
+@@ -277,7 +330,8 @@ void Ota::MarkCurrentVersionValid() {
      }
  }
  
@@ -1689,7 +1704,7 @@ index 124d333..a18a8c9 100644
      ESP_LOGI(TAG, "Upgrading firmware from %s", firmware_url.c_str());
      esp_ota_handle_t update_handle = 0;
      auto update_partition = esp_ota_get_next_update_partition(NULL);
-@@ -286,7 +326,8 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
+@@ -286,7 +340,9 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
          return false;
      }
  
@@ -1698,8 +1713,9 @@ index 124d333..a18a8c9 100644
 +             update_partition->address);
      bool image_header_checked = false;
      std::string image_header;
++    ScopedTargetUrl target_url_guard(firmware_url);
  
-@@ -338,7 +379,8 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
+@@ -338,7 +394,8 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
          buffer_offset += n;
          if (esp_timer_get_time() - last_calc_time >= 1000000 || n == 0) {
              size_t progress = total_read * 100 / content_length;
@@ -1709,7 +1725,7 @@ index 124d333..a18a8c9 100644
              if (callback) {
                  callback(progress, recent_read);
              }
-@@ -348,9 +390,14 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
+@@ -348,9 +405,14 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
  
          if (!image_header_checked) {
              image_header.append(buffer, buffer_offset);
@@ -1726,7 +1742,7 @@ index 124d333..a18a8c9 100644
  
                  if (esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle)) {
                      esp_ota_abort(update_handle);
-@@ -409,7 +456,6 @@ bool Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback)
+@@ -409,7 +471,6 @@ bool Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback)
      return Upgrade(firmware_url_, callback);
  }
  
@@ -1734,7 +1750,7 @@ index 124d333..a18a8c9 100644
  // Versions are compared as dot-separated decimal numbers. Parsing must never throw: exceptions are
  // disabled in this project, so a malformed string from the server would otherwise terminate the
  // firmware instead of being reported as an error.
-@@ -471,10 +517,11 @@ std::string Ota::GetActivationPayload() {
+@@ -471,10 +532,11 @@ std::string Ota::GetActivationPayload() {
  
      std::string hmac_hex;
  #ifdef SOC_HMAC_SUPPORTED
@@ -1749,7 +1765,7 @@ index 124d333..a18a8c9 100644
      if (ret != ESP_OK) {
          ESP_LOGE(TAG, "HMAC calculation failed: %s", esp_err_to_name(ret));
          return "{}";
-@@ -487,7 +534,7 @@ std::string Ota::GetActivationPayload() {
+@@ -487,7 +549,7 @@ std::string Ota::GetActivationPayload() {
      }
  #endif
  
@@ -1758,7 +1774,7 @@ index 124d333..a18a8c9 100644
      cJSON_AddStringToObject(payload, "algorithm", "hmac-sha256");
      cJSON_AddStringToObject(payload, "serial_number", serial_number_.c_str());
      cJSON_AddStringToObject(payload, "challenge", activation_challenge_.c_str());
-@@ -533,7 +580,8 @@ esp_err_t Ota::Activate() {
+@@ -533,7 +595,8 @@ esp_err_t Ota::Activate() {
          return ESP_ERR_TIMEOUT;
      }
      if (*status_code != 200) {
@@ -1817,11 +1833,12 @@ diff --git a/main/protocols/protocol.h b/main/protocols/protocol.h
 index cfa0dd2..6291853 100644
 --- a/main/protocols/protocol.h
 +++ b/main/protocols/protocol.h
-@@ -60,6 +60,10 @@ public:
+@@ -60,6 +60,11 @@ public:
      virtual bool OpenAudioChannel() = 0;
      virtual void CloseAudioChannel(bool send_goodbye = true) = 0;
      virtual bool IsAudioChannelOpened() const = 0;
 +    virtual bool SupportsPersistentConnection() const { return false; }
++    virtual bool IsFallbackPending() const { return false; }
 +    virtual void SendStandby();
 +    virtual bool ConfigureBackend(const cJSON* plan) { return false; }
 +    void SendBackendAck(const std::string& request_id, bool accepted);
@@ -1840,23 +1857,29 @@ index e0e3df9..b5e1677 100644
  #include <cstring>
  #include "assets/lang_config.h"
  
-@@ -77,15 +78,58 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+@@ -77,15 +78,67 @@ void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
  }
  
  bool WebsocketProtocol::OpenAudioChannel() {
 +    auto& selection = BackendSelection::GetInstance();
 +    active_backend_ = selection.BeginAttempt();
++    const bool has_fallback = !active_backend_.fallback_url.empty();
++    const bool has_remote = !active_backend_.remote_url.empty();
++    fallback_pending_.store(has_fallback || has_remote);
 +    bool connected = ConnectBackend();
-+    if (!connected && !active_backend_.fallback_url.empty()) {
++    if (!connected && has_fallback) {
 +        CloseAudioChannel();
++        fallback_pending_.store(has_remote);
 +        ESP_LOGI(TAG, "Trying the paired backend's saved LAN address");
 +        connected = ConnectBackend(active_backend_.fallback_url);
 +    }
-+    if (!connected && !active_backend_.remote_url.empty()) {
++    if (!connected && has_remote) {
 +        CloseAudioChannel();
++        fallback_pending_.store(false);
 +        ESP_LOGI(TAG, "LAN unavailable; trying the paired backend's encrypted remote address");
 +        connected = ConnectBackend(active_backend_.remote_url);
 +    }
++    fallback_pending_.store(false);
 +    if (!connected || !selection.Connected()) {
 +        selection.Failed();
 +        CloseAudioChannel();
@@ -1893,13 +1916,16 @@ index e0e3df9..b5e1677 100644
      if (version != 0) {
          version_ = version;
      }
++    if (!active_backend_.url.empty() || version == 0) {
++        version_ = 1;
++    }
  
      error_occurred_ = false;
 +    xEventGroupClearBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT);
  
      auto network = Board::GetInstance().GetNetwork();
      websocket_ = network->CreateWebSocket(1);
-@@ -145,6 +189,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
+@@ -145,6 +198,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
              if (cJSON_IsString(type)) {
                  if (strcmp(type->valuestring, "hello") == 0) {
                      ParseServerHello(root);
@@ -1908,7 +1934,7 @@ index e0e3df9..b5e1677 100644
                  } else {
                      if (on_incoming_json_ != nullptr) {
                          on_incoming_json_(root);
-@@ -205,8 +251,14 @@ std::string WebsocketProtocol::GetHelloMessage() {
+@@ -205,8 +260,14 @@ std::string WebsocketProtocol::GetHelloMessage() {
  #if CONFIG_USE_SERVER_AEC
      cJSON_AddBoolToObject(features, "aec", true);
  #endif
@@ -1923,7 +1949,7 @@ index e0e3df9..b5e1677 100644
      AddTextFontCapabilities(root);
      cJSON_AddStringToObject(root, "transport", "websocket");
      cJSON* audio_params = cJSON_CreateObject();
-@@ -223,6 +275,16 @@ std::string WebsocketProtocol::GetHelloMessage() {
+@@ -223,6 +284,16 @@ std::string WebsocketProtocol::GetHelloMessage() {
  }
  
  void WebsocketProtocol::ParseServerHello(const cJSON* root) {
@@ -1940,7 +1966,7 @@ index e0e3df9..b5e1677 100644
      auto transport = cJSON_GetObjectItem(root, "transport");
      if (!cJSON_IsString(transport)) {
          ESP_LOGE(TAG, "Missing or non-string transport in server hello");
-@@ -233,6 +295,9 @@ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
+@@ -233,6 +304,9 @@ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
          return;
      }
  
@@ -1950,7 +1976,7 @@ index e0e3df9..b5e1677 100644
      auto session_id = cJSON_GetObjectItem(root, "session_id");
      if (cJSON_IsString(session_id)) {
          session_id_ = session_id->valuestring;
-@@ -251,5 +316,18 @@ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
+@@ -251,5 +325,18 @@ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
          }
      }
  
@@ -1973,7 +1999,7 @@ diff --git a/main/protocols/websocket_protocol.h b/main/protocols/websocket_prot
 index 48bbc00..697f321 100644
 --- a/main/protocols/websocket_protocol.h
 +++ b/main/protocols/websocket_protocol.h
-@@ -1,12 +1,12 @@
+@@ -1,12 +1,13 @@
  #ifndef _WEBSOCKET_PROTOCOL_H_
  #define _WEBSOCKET_PROTOCOL_H_
  
@@ -1982,17 +2008,19 @@ index 48bbc00..697f321 100644
  #include "protocol.h"
  
 -#include <web_socket.h>
++#include <atomic>
  #include <freertos/FreeRTOS.h>
  #include <freertos/event_groups.h>
 +#include <web_socket.h>
  
  #define WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT (1 << 0)
  
-@@ -20,11 +20,17 @@ public:
+@@ -20,11 +21,19 @@ public:
      bool OpenAudioChannel() override;
      void CloseAudioChannel(bool send_goodbye = true) override;
      bool IsAudioChannelOpened() const override;
 +    bool SupportsPersistentConnection() const override { return persistent_connection_; }
++    bool IsFallbackPending() const override { return fallback_pending_.load(); }
 +    bool ConfigureBackend(const cJSON* plan) override;
  
  private:
@@ -2001,6 +2029,7 @@ index 48bbc00..697f321 100644
      int version_ = 1;
 +    // Try the initial background connection, then honor server negotiation.
 +    bool persistent_connection_ = true;
++    std::atomic<bool> fallback_pending_{false};
 +    BackendTarget active_backend_;
 +    bool ConnectBackend(const std::string& override_url = {});
  
