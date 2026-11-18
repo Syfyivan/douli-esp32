@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { probeService } from "./policy.mjs";
 
+const exited = new WeakSet();
+
 export class DesktopService extends EventEmitter {
   constructor(options) { super(); Object.assign(this, options); this.mode = "stopped"; }
 
@@ -30,6 +32,7 @@ export class DesktopService extends EventEmitter {
       stdio: "pipe", serviceName: "豆梨本地服务",
     });
     this.child = child;
+    child.once("exit", () => exited.add(child));
     child.stdout.on("data", value => this.log(value.toString().trim()));
     child.stderr.on("data", value => this.log(value.toString().trim()));
     await new Promise((resolve, reject) => {
@@ -45,6 +48,7 @@ export class DesktopService extends EventEmitter {
       child.on("message", message);
       child.once("exit", exit);
     }).catch(async error => { await this.stop(); throw error; });
+    if (this.child !== child) throw new Error("本地服务已停止。");
     this.mode = "owned";
     child.once("exit", code => {
       if (this.child !== child) return;
@@ -60,12 +64,14 @@ export class DesktopService extends EventEmitter {
     const child = this.child;
     this.child = null;
     this.mode = "stopped";
-    if (!child?.pid) return;
+    if (!child || exited.has(child)) return;
     await new Promise(resolve => {
+      const onExit = () => { clearTimeout(timer); clearTimeout(deadline); resolve(); };
       const timer = setTimeout(() => { child.kill(); }, 8500);
-      const deadline = setTimeout(resolve, 10000);
-      child.once("exit", () => { clearTimeout(timer); clearTimeout(deadline); resolve(); });
-      child.postMessage({ type: "stop" });
+      const deadline = setTimeout(() => { child.off("exit", onExit); resolve(); }, 10000);
+      child.once("exit", onExit);
+      if (child.pid) child.postMessage({ type: "stop" });
+      else child.once("spawn", () => { if (!child.kill()) child.postMessage({ type: "stop" }); });
     });
     this.log("Bundled service stopped.");
   }

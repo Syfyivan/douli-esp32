@@ -54,3 +54,25 @@ test("desktop custom port accepts HTTP and voice, while foreign origins remain b
   const [response] = await once(rejected, "error");
   assert.match(response.message, /403/);
 });
+
+test("Vite dev PDF resource middleware serves local cmaps/wasm and blocks path traversal", async () => {
+  const viteConfig = (await import("../vite.config.mjs")).default;
+  let handler;
+  viteConfig.plugins[0].configureServer({ middlewares: { use: fn => { handler = fn; } } });
+  const request = (url, method = "GET") => new Promise(resolve => {
+    const headers = {};
+    let passedNext = false;
+    handler(
+      { method, url },
+      { setHeader: (k, v) => { headers[k] = v; }, end: body => resolve({ passedNext: false, headers, body }) },
+      () => { passedNext = true; resolve({ passedNext, headers }); },
+    );
+  });
+  const cmap = await request("/pdfjs/cmaps/Roman.bcmap");
+  assert.equal(cmap.passedNext, false);
+  assert.ok(cmap.body.length > 0);
+  const wasm = await request("/pdfjs/wasm/qcms_bg.wasm", "HEAD");
+  assert.equal(wasm.headers["Content-Type"], "application/wasm");
+  const traversal = await request("/pdfjs/cmaps/../../package.json");
+  assert.equal(traversal.passedNext, true, "directory traversal must fall through without serving files outside pdfjs");
+});
