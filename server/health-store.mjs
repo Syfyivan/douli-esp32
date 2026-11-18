@@ -78,8 +78,11 @@ export class HealthStore {
     if (!item) throw Object.assign(new Error("健康资料不存在或已删除"), { statusCode: 404 });
     return item;
   }
-  list(kind) {
-    return this.store.db.prepare("SELECT * FROM health_records WHERE kind=? ORDER BY updated_at DESC").all(kind).map(r => this.read(r));
+  list(kind, limit) {
+    const rows = limit
+      ? this.store.db.prepare("SELECT * FROM health_records WHERE kind=? ORDER BY updated_at DESC LIMIT ?").all(kind, limit)
+      : this.store.db.prepare("SELECT * FROM health_records WHERE kind=? ORDER BY updated_at DESC").all(kind);
+    return rows.map(r => this.read(r));
   }
   put(kind, data, id, revision) {
     const previous = id ? this.require(id, kind) : null;

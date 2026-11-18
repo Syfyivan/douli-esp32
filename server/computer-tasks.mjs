@@ -32,7 +32,7 @@ export function explicitComputerAction(text = "", action) {
 
 export class ComputerTasks {
   constructor(store, { client, pollMs = 2500 } = {}) {
-    this.store = store; this.pollMs = pollMs; this.locks = new Map(); this.closed = false;
+    this.store = store; this.pollMs = pollMs; this.locks = new Map(); this.lastChecked = new Map(); this.closed = false;
     // Deliberately outside the sync table allowlist: executable paths, handles
     // and permission to control this computer must never migrate to a phone.
     store.db.exec(`CREATE TABLE IF NOT EXISTS computer_config (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
@@ -51,7 +51,7 @@ export class ComputerTasks {
     if (typeof config.enabled !== "boolean" || typeof config.cliPath !== "string" || config.cliPath.length > 2000 ||
       typeof config.defaultWorktree !== "string" || config.defaultWorktree.length > 1000 || /[\r\n\0]/.test(config.cliPath)) throw new Error("无效的电脑控制设置");
     if (config.enabled && process.env.DOULI_MOBILE === "1") throw new Error("请在电脑后台开启 Orca 控制");
-    if (config.cliPath !== this.config().cliPath && this.list().some(t => activeStates.has(t.state))) throw new Error("有任务进行中，请先停止任务再更换 Orca 路径");
+    if (config.cliPath !== this.config().cliPath && this.pending().some(t => activeStates.has(t.state) || (t.state === "uncertain" && t.terminal))) throw new Error("有任务进行中，请先停止任务再更换 Orca 路径");
     this.store.db.prepare("INSERT OR REPLACE INTO computer_config VALUES (1,?)").run(this.store.seal(config));
     return config;
   }
@@ -71,7 +71,7 @@ export class ComputerTasks {
   pending() { return this.store.db.prepare("SELECT payload FROM computer_tasks WHERE state NOT IN ('completed','interrupted','closed','failed')").all().map(row => this.store.unseal(row.payload)); }
   view(task, detail = false) {
     return { id: task.id, title: task.title, project: task.project, state: task.state, createdAt: task.createdAt, updatedAt: task.updatedAt,
-      error: task.error || "", observationError: task.observationError || "", lastCheckedAt: task.lastCheckedAt, turn: task.turns.length,
+      error: task.error || "", observationError: task.observationError || "", lastCheckedAt: this.lastChecked.get(task.id) || task.lastCheckedAt, turn: task.turns.length,
       canFollowup: !!task.terminal && ["completed", "interrupted"].includes(task.state), canStop: activeStates.has(task.state) || task.state === "uncertain",
       canClose: !!task.terminal && task.state !== "closed" && task.origin !== "existing_session", resultVerified: false,
       origin: task.origin || "created", sessionTitle: task.sessionTitle || "",
@@ -146,7 +146,7 @@ export class ComputerTasks {
     // chat turns or HTTP clients ask to continue it at the same time.
     return this.exclusive(`session:${workspace.id}:${terminal.tabId}:${terminal.incarnationId}`, async () => {
       const repeated = this.prior(requestKey, fingerprint); if (repeated) return repeated;
-      const existing = this.store.db.prepare("SELECT payload FROM computer_tasks").all().map(row => this.store.unseal(row.payload))
+      const existing = this.store.db.prepare("SELECT payload FROM computer_tasks WHERE state != 'closed'").all().map(row => this.store.unseal(row.payload))
         .find(t => t.project.id === workspace.id && t.terminal?.tabId === terminal.tabId && t.terminal.incarnationId === terminal.incarnationId);
       if (!existing && this.pending().length >= 8) throw new Error("已有 8 个进行中或待核对的电脑任务，请先处理已有任务");
       const taskId = existing?.id || randomUUID();
@@ -257,9 +257,14 @@ export class ComputerTasks {
   async advance(id) {
     const task = this.get(id); const turn = task.turns.at(-1);
     if (this.closed || ["closed", "failed"].includes(task.state)) return task;
+    const before = hash([task.state, task.error || "", task.observationError || "", task.output || "", task.terminal, turn]);
+    const saveIfChanged = () => {
+      const after = hash([task.state, task.error || "", task.observationError || "", task.output || "", task.terminal, turn]);
+      return after !== before ? this.save(task) : task;
+    };
     try {
       if (task.state === "queued") {
-        if (!this.enabled()) { task.error = "Orca 控制已关闭，任务尚未提交"; return this.save(task); }
+        if (!this.enabled()) { task.error = "Orca 控制已关闭，任务尚未提交"; return saveIfChanged(); }
         task.state = "creating"; this.save(task);
         const created = await this.client.create(task.project.id, `豆梨任务 ${task.id.slice(0, 8)}`);
         const terminal = created.terminal;
@@ -268,11 +273,13 @@ export class ComputerTasks {
         task.state = "starting"; task.startingAt = now(); task.error = ""; this.save(task);
       }
       const shown = await this.terminal(task);
-      task.lastCheckedAt = now(); task.observationError = "";
+      const checkedAt = now();
+      task.lastCheckedAt = checkedAt; this.lastChecked.set(task.id, checkedAt);
+      task.observationError = "";
       if (!shown.connected || !shown.writable) {
         if (shown.exitCause) { task.state = "closed"; task.error = "Orca 会话已结束"; turn.state = "closed"; }
         else task.observationError = "Orca 会话当前未连接，任务是否结束尚未确认";
-        return this.save(task);
+        return saveIfChanged();
       }
       task.output = screenText(await this.client.read(task.terminal.handle));
       if (task.state === "starting") {
@@ -281,9 +288,9 @@ export class ComputerTasks {
         // Its explicit empty prompt is the narrowly scoped startup fallback.
         if (!idle && !startupReady(task.output)) {
           if (Date.now() - Date.parse(task.startingAt) > 60000) task.error = "Agent 尚未就绪，请在 Orca 查看登录或启动提示";
-          return this.save(task);
+          return saveIfChanged();
         }
-        if (!this.enabled() || task.stopRequested) return this.save(task);
+        if (!this.enabled() || task.stopRequested) return saveIfChanged();
         task.state = "sending"; turn.state = "sending"; turn.prompt = this.prompt(task); this.save(task);
         const receipt = await this.client.send(task.terminal.handle, turn.prompt);
         this.accept(task, receipt); this.save(task); return task;
@@ -300,7 +307,7 @@ export class ComputerTasks {
           task.state = "completed"; turn.state = "completed"; turn.output = screenText(await this.client.read(task.terminal.handle)); task.output = turn.output;
           task.error = "任务当前已空闲；无法确认是中断生效还是任务恰好结束";
         }
-        return this.save(task);
+        return saveIfChanged();
       }
       if (turn.started && ["running", "accepted", "waiting", "uncertain"].includes(task.state)) {
         const needsAttention = /approve|allow once|needs? permission|允许.*执行|批准.*执行/i.test(task.output.split("\n").slice(-12).join("\n"));
@@ -312,12 +319,14 @@ export class ComputerTasks {
           task.state = "running";
         }
       }
-      return this.save(task);
+      return saveIfChanged();
     } catch (error) {
       if (["creating", "sending"].includes(task.state)) {
         task.state = "uncertain"; task.error = `提交结果尚未确认，没有重复提交。${error.message}`;
       } else task.observationError = error.message;
-      task.lastCheckedAt = now(); return this.save(task);
+      const checkedAt = now();
+      task.lastCheckedAt = checkedAt; this.lastChecked.set(task.id, checkedAt);
+      return saveIfChanged();
     }
   }
   accept(task, receipt) {

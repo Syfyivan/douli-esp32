@@ -125,3 +125,33 @@ test("medical API is localhost only and browser/voice engine stores no plaintext
   assert.ok(!JSON.stringify(app.store.db.prepare("SELECT * FROM messages").all()).includes("private-correction"));
   assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM memory_jobs").get().n, 0);
 });
+
+test("evidence cache excludes user documents and survives concurrent cache updates without dropping live sources", async t => {
+  const { vault } = fixture(t);
+  const ref = vault.put("reference", {
+    title: "本地血糖指南", organization: "机构", url: "https://who.int/guide",
+    published: "2026-01-01", reviewAfter: "2027-01-01", region: "中国", category: "guideline",
+    version: "1.0", population: "", text: "私人导入资料全文-血糖管理", license: "自用", authorized: true, status: "active",
+  });
+  const evidence = new HealthEvidence(vault, {
+    fetcher: async url => {
+      // Simulate a concurrent consultation updating the same cache entry while retrieval is in flight.
+      if (String(url).includes("esearch")) {
+        const existing = vault.list("evidence")[0];
+        if (existing) vault.put("evidence", existing, existing.id, existing.revision);
+        return new Response(JSON.stringify({ esearchresult: { idlist: ["789"] } }));
+      }
+      return new Response("<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>789</PMID><Article><ArticleTitle>Glucose</ArticleTitle><Abstract><AbstractText>PubMed live abstract</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle></PubmedArticleSet>");
+    },
+  });
+  const first = await evidence.search({ zh: "", en: "血糖 glucose", drugs: [] }, AbortSignal.timeout(5000));
+  assert.equal(first.sources.some(s => s.coverage === "user_document"), true);
+  assert.equal(first.sources.some(s => s.pmid === "789"), true);
+  const cachedPayload = JSON.stringify(vault.list("evidence")[0]);
+  assert.equal(cachedPayload.includes("私人导入资料全文"), false, "cached web evidence must not duplicate user documents");
+  const second = await evidence.search({ zh: "", en: "血糖 glucose", drugs: [] }, AbortSignal.timeout(5000), { refresh: true });
+  assert.equal(second.sources.some(s => s.pmid === "789"), true, "concurrent cache write must not wipe live retrieved sources");
+  vault.remove(ref.id, ref.revision);
+  const fromCache = await evidence.search({ zh: "", en: "血糖 glucose", drugs: [] }, AbortSignal.timeout(5000));
+  assert.equal(fromCache.sources.some(s => s.coverage === "user_document"), false);
+});

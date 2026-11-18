@@ -72,7 +72,7 @@ export class Discovery {
   }
   receive(bytes, remote) {
     try {
-      if (bytes.length > 1500) return;
+      if (bytes.length > 1500 || !/^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.)/.test(remote.address)) return;
       const envelope = JSON.parse(bytes);
       if (typeof envelope.body !== "string" || !equal(envelope.mac,createHmac("sha256",this.key).update(envelope.body).digest("hex"))) return;
       const value = JSON.parse(envelope.body);

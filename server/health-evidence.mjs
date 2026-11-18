@@ -146,8 +146,9 @@ export class HealthEvidence {
     const fresh = cached && Date.now() - Date.parse(cached.updatedAt) < 24 * 60 * 60 * 1000;
     if (fresh && !refresh) return { ...cached.result, cached: true, local: undefined,
       sources: [...this.local(plan.zh + " " + plan.en), ...cached.result.sources.filter(s => s.coverage !== "user_document")] };
-    const sources = this.local(plan.zh + " " + plan.en), services = [];
-    const jobs = [["权威网站", () => this.trustedWeb(plan.zh, signal)]];
+    const remoteSources = [], services = [];
+    const jobs = [];
+    if (plan.zh) jobs.push(["权威网站", () => this.trustedWeb(plan.zh, signal)]);
     if (plan.en) jobs.push(["MedlinePlus", () => this.patient(plan.en, signal)], ["PubMed", async () => {
       const prior = this.queue || Promise.resolve();
       const task = prior.catch(() => {}).then(() => this.pubmed(plan.en, signal));
@@ -160,12 +161,21 @@ export class HealthEvidence {
       const r = results[i];
       services.push({ name: jobs[i][0], status: r.status === "fulfilled" ? (r.value.length ? "retrieved" : "empty") : "failed",
         message: r.status === "rejected" ? r.reason.message : undefined });
-      if (r.status === "fulfilled") sources.push(...r.value);
+      if (r.status === "fulfilled") remoteSources.push(...r.value);
     }
     signal?.throwIfAborted();
-    const result = { sources, services, cached: false, searchedAt: new Date().toISOString() };
-    this.vault.put("evidence", { cacheKey: key, result }, cached?.id, cached?.revision);
-    for (const item of this.vault.list("evidence").slice(100)) this.vault.remove(item.id, item.revision);
-    return result;
+    const searchedAt = new Date().toISOString();
+    // Keep user-imported documents out of the cache payload so edits or deletions
+    // take effect immediately; a concurrent cache write must not drop live sources.
+    try {
+      if (!this.vault.store.closed) {
+        const latest = this.vault.list("evidence").find(r => r.cacheKey === key);
+        this.vault.put("evidence", { cacheKey: key, result: { sources: remoteSources, services, cached: false, searchedAt } }, latest?.id, latest?.revision);
+        for (const item of this.vault.list("evidence").slice(100)) {
+          try { this.vault.remove(item.id, item.revision); } catch {}
+        }
+      }
+    } catch {}
+    return { sources: [...this.local(plan.zh + " " + plan.en), ...remoteSources], services, cached: false, searchedAt };
   }
 }

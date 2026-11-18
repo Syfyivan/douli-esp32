@@ -25,10 +25,11 @@ export function orcaExecutable(configured = "", env = process.env, platform = pr
 }
 
 export class OrcaClient {
-  constructor(config, { exec = execute } = {}) { this.config = config; this.exec = exec; }
+  constructor(config, { exec = execute } = {}) { this.config = config; this.exec = exec; this.defaultPath = null; }
   async call(args, { timeoutMs = 12000 } = {}) {
     if (process.env.DOULI_MOBILE === "1") throw new OrcaError("Orca 控制需要在运行 Orca 的电脑后台使用");
-    const executable = orcaExecutable(this.config().cliPath);
+    const configured = this.config().cliPath;
+    const executable = configured ? orcaExecutable(configured) : (this.defaultPath ||= orcaExecutable(""));
     // A server launched inside an Agent must still address the local desktop,
     // never inherit a parent Agent's terminal, remote pairing or environment.
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^ORCA_/i.test(key)));

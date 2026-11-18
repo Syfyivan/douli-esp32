@@ -87,7 +87,15 @@ test("signed discovery selects available host and rejects forged beacons",()=>{
   phone.receive(computer.packet(),{address:"127.0.0.2"});assert.equal(phone.leader(),computer.id);
   phone.peers.get(computer.id).seen=Date.now()-10000;assert.equal(phone.leader(),phone.id);
   phone.receive(Buffer.from('{"body":"forged","mac":"bad"}'),{address:"127.0.0.3"});assert.equal(phone.peers.size,1);
+  phone.receive(computer.packet(),{address:"8.8.8.8"});assert.equal(phone.peers.get(computer.id).address,"127.0.0.2","public source IPs must never overwrite LAN peer address");
   assert.deepEqual(readQuestions(Buffer.alloc(2)),[]);assert.ok(dnsAnswer("douli-test.local","127.0.0.1").length>20);
+});
+test("non-config settings rows stay clean on sync and replay cache covers full clock-skew window", t => {
+  const { stores: [a, b], replicas: [sa, sb] } = pair(t);
+  a.db.prepare("INSERT INTO settings VALUES ('avatar-generation', ?)").run(a.seal({ jobId: "j1", status: "queued" }));
+  sb.apply(sa.snapshot());
+  const syncedJob = b.unseal(b.db.prepare("SELECT value FROM settings WHERE id='avatar-generation'").get().value);
+  assert.equal(syncedJob.people, undefined, "people metadata must only merge into settings.id='config'");
 });
 test("two real HTTP hosts pair once and synchronize encrypted health originals in both directions",async t=>{
   const dirs=[mkdtempSync(join(tmpdir(),"douli-host-a-")),mkdtempSync(join(tmpdir(),"douli-host-b-"))];

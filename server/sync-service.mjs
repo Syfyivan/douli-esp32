@@ -90,7 +90,11 @@ export class SyncService {
     const old=this.peers.get(peer.id)||{}; this.peers.set(peer.id,{...old,...peer,seen:Date.now()});
     const config=this.replica.config(); if(!config) return;
     const durable={id:peer.id,address:peer.address,port:peer.port,name:peer.name||old.name,kind:peer.kind||old.kind};
-    const list=(config.peers||[]).filter(p=>p.id!==peer.id); list.push(durable); config.peers=list.slice(-8); this.replica.config(config);
+    const list=(config.peers||[]).filter(p=>p.id!==peer.id); list.push(durable);
+    const next=list.slice(-8);
+    if (JSON.stringify(config.peers) !== JSON.stringify(next)) {
+      config.peers=next; this.replica.config(config);
+    }
   }
   receive(box,address) {
     const config=this.replica.config(); if(!config || !privateIp(address)) throw new Error("未配对设备");
@@ -98,7 +102,8 @@ export class SyncService {
     if(!validId(input.sender) || input.sender===this.replica.id || !validId(input.requestId) || !Number.isFinite(input.at) || Math.abs(Date.now()-input.at)>120000)
       throw new Error("同步请求身份或时间无效");
     if(this.replays.has(input.requestId)) throw new Error("重复的同步请求");
-    for(const [id,at] of this.replays) if(Date.now()-at>120000) this.replays.delete(id);
+    // Retain seen request IDs across the full +-120s clock-skew validity window.
+    for(const [id,at] of this.replays) if(Date.now()-at>240000) this.replays.delete(id);
     if(this.replays.size>1000) throw new Error("同步请求过于频繁");
     this.replays.set(input.requestId,Date.now());
     let result;
@@ -153,14 +158,21 @@ export class SyncService {
     } finally { this.running=false; }
   }
   async refreshDiscovery() {
-    const config=this.replica.config(), address=this.addresses?.().find(privateIp);
-    if(!this.useDiscovery || !config || !address || this.closed) return;
-    if(this.discovery && this.discovery.address===address && this.discovery.group===config.group) return;
-    await this.stopDiscovery();
-    const candidate=new Discovery({id:this.replica.id,group:config.group,key:config.key,address,port:this.port,priority:config.priority,hostname:config.hostname,
-      ready:()=>this.ready(),onPeer:peer=>this.rememberPeer(peer),onError:error=>{this.errors.push(error.message);this.errors=this.errors.slice(-3);}});
-    try { await candidate.start(); this.discovery=candidate; }
-    catch(error){ this.errors.push("局域网自动发现未启动："+error.message); this.errors=this.errors.slice(-3); }
+    if (this.discoveryTask) return this.discoveryTask;
+    this.discoveryTask = (async () => {
+      const config=this.replica.config(), address=this.addresses?.().find(privateIp);
+      if(!this.useDiscovery || !config || !address || this.closed) return;
+      if(this.discovery && this.discovery.address===address && this.discovery.group===config.group) return;
+      await this.stopDiscovery();
+      const candidate=new Discovery({id:this.replica.id,group:config.group,key:config.key,address,port:this.port,priority:config.priority,hostname:config.hostname,
+        ready:()=>this.ready(),onPeer:peer=>this.rememberPeer(peer),onError:error=>{this.errors.push(error.message);this.errors=this.errors.slice(-3);}});
+      try {
+        await candidate.start();
+        if (this.closed || !this.replica.config()) { candidate.close(); return; }
+        this.discovery=candidate;
+      } catch(error){ this.errors.push("局域网自动发现未启动："+error.message); this.errors=this.errors.slice(-3); }
+    })().finally(() => { this.discoveryTask = null; });
+    return this.discoveryTask;
   }
   async stopDiscovery(){this.discovery?.close();this.discovery=null;}
   start(){const config=this.replica.config();for(const peer of config?.peers||[])this.peers.set(peer.id,peer);this.timer=setInterval(()=>void this.tick(),8000);this.timer.unref();void this.tick();}
