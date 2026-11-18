@@ -57,7 +57,10 @@ public class EngineService extends Service {
         new Thread(() -> {
             try {
                 File root = unpack();
-                if (!stopping) runNode(root.getAbsolutePath(), dataDir().getAbsolutePath(), token);
+                if (!stopping) {
+                    int code = runNode(root.getAbsolutePath(), dataDir().getAbsolutePath(), token);
+                    if (code != 0 && !stopping) throw new IOException("Engine exited with code " + code);
+                }
             } catch (Throwable error) {
                 try { Files.write(new File(getFilesDir(), "startup-error.txt").toPath(), error.toString().getBytes(StandardCharsets.UTF_8)); } catch (IOException ignored) {}
             } finally {
