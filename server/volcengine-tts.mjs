@@ -53,12 +53,18 @@ const deferred = () => {
   value.promise.catch(() => {});
   return value;
 };
+const VOLCENGINE_TTS = Symbol("volcengineTts");
+export const markVolcengineTts = profile => profile ? { ...profile, [VOLCENGINE_TTS]: true } : profile;
 export const isVolcengineTts = profile => {
-  try { return new URL(profile.baseUrl).hostname === "openspeech.bytedance.com" && /^(?:seed-(?:tts|icl)-|volc\.)/.test(profile.model); }
-  catch { return false; }
+  if (profile?.[VOLCENGINE_TTS]) return true;
+  try {
+    const url = new URL(profile.baseUrl);
+    return ["ws:", "wss:"].includes(url.protocol) ||
+      (url.hostname === "openspeech.bytedance.com" && /^(?:seed-(?:tts|icl)-|volc\.)/.test(profile.model));
+  } catch { return false; }
 };
 export function speechProfile(settings) {
-  return settings.input?.ttsProvider === "volcengine" ? settings.models.streamingTts : settings.models.tts;
+  return settings.input?.ttsProvider === "volcengine" ? markVolcengineTts(settings.models.streamingTts) : settings.models.tts;
 }
 
 function resolveTtsUrl(baseUrl) {

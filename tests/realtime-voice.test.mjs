@@ -88,10 +88,15 @@ test("Seeduplex tool rounds preserve call IDs, suppress duplicates and reject ol
   const first = [];
   for await (const e of client.stream(client.turn, {}, [], new AbortController().signal, [])) first.push(e);
   assert.equal(first.at(-1).calls.length, 1);
+  // Seeduplex closes the tool-call response envelope before Round 1 begins.
+  c.send(output("text.done")); c.send(output("audio.done"));
+  await until(() => client.turn.queue.items.some(i => i.value.type === "audio_end"));
   const next = (async () => { const values = []; for await (const e of client.stream(client.turn, {}, [{ role: "tool", tool_call_id: "call-1", content: '{"acknowledged":true}' }], new AbortController().signal, [])) values.push(e); return values; })();
   await until(() => c.seen.some(e => e.items?.[0]?.call_id === "call-1"));
   c.send(output("text.delta", { delta: "设备已返回。" })); c.send(output("text.done")); c.send(output("audio.done"));
-  assert.equal((await next).filter(e => e.type === "tools").length, 0);
+  const roundOne = await next;
+  assert.equal(roundOne.filter(e => e.type === "tools").length, 0);
+  assert.equal(roundOne.some(e => e.type === "text" && e.text === "设备已返回。"), true);
   c.send(started); c.send(completed("下一句", "input-2"));
   c.send(output("audio.delta", { delta: Buffer.alloc(960).toString("base64") }));
   c.send({ ...output("text.delta", { delta: "新回答" }), question_id: "q2", response_id: "r2" });

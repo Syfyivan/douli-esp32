@@ -219,6 +219,11 @@ export class RealtimeVoice {
     });
     if (results.length) {
       turn.textDone = false; turn.audioDone = false;
+      turn.queue.items = turn.queue.items.filter(item => {
+        if (item.value.type !== "audio_end") return true;
+        turn.queue.bytes -= item.bytes;
+        return false;
+      });
       this.send({ type: "conversation.item.create", items: results });
     }
     yield { type: "model", model: this.profile.model };

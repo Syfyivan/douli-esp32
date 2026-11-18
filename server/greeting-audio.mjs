@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { streamSpeech, speechProfile } from "./providers.mjs";
+import { streamSpeech, speechProfile, isVolcengineTts } from "./providers.mjs";
 
 // One fixed greeting, in memory only. Warm it while the board is connected and
 // idle; a wake during warming can consume incoming chunks without a second TTS
@@ -12,16 +12,17 @@ export class GreetingAudio {
   }
   prepare(settings, retry = false) {
     if (this.closed) return null;
-    const text = settings.assistant.greeting, profile = { ...speechProfile(settings) };
+    const text = settings.assistant.greeting?.trim(), profile = { ...speechProfile(settings) };
+    const volcengine = isVolcengineTts(profile);
     const key = createHash("sha256").update(JSON.stringify([
-      text, profile.baseUrl, profile.model, profile.voice || "alloy",
+      text, volcengine, profile.baseUrl, profile.model, profile.voice || "alloy",
       profile.pcmSampleRate || 24000, profile.apiKey || "",
     ])).digest("hex");
     if (this.entry?.key === key && (!this.entry.error || (!retry && Date.now() < this.entry.retryAt)))
       return this.entry;
     this.entry?.controller.abort();
     this.entry = null;
-    if (!text || !profile.baseUrl || !profile.model) return null;
+    if (!text || !profile.model || (volcengine ? !profile.apiKey || !profile.voice : !profile.baseUrl)) return null;
     const entry = this.entry = {
       key, controller: new AbortController(), chunks: [], waiters: new Set(),
       startedAt: Date.now(), bytes: 0, done: false, error: null,

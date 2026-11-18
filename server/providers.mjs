@@ -1,8 +1,8 @@
 import WebSocket from "ws";
 import { VolcengineTranscriber } from "./volcengine-asr.mjs";
 import { wav } from "./audio.mjs";
-import { isVolcengineTts, streamVolcengineSpeech } from "./volcengine-tts.mjs";
-export { speechProfile } from "./volcengine-tts.mjs";
+import { isVolcengineTts, markVolcengineTts, streamVolcengineSpeech } from "./volcengine-tts.mjs";
+export { speechProfile, isVolcengineTts, markVolcengineTts } from "./volcengine-tts.mjs";
 
 export class ConfigurationError extends Error {
   constructor(message) {
@@ -110,62 +110,50 @@ export async function* streamChat(profile, messages, signal, tools = [], toolCho
   const calls = new Map();
   let reportedModel;
   let reasoningContent;
-  for await (const chunk of r.body) {
-    pending += decoder.decode(chunk, { stream: true });
-    let newline;
-    while ((newline = pending.indexOf("\n")) >= 0) {
-      const line = pending.slice(0, newline).trim();
-      pending = pending.slice(newline + 1);
-      if (!line.startsWith("data:") || line.slice(5).trim() === "[DONE]")
-        continue;
-      const data = JSON.parse(line.slice(5));
-      if (data.error) throw new Error(data.error.message || "模型流返回错误");
-      if (data.usage && typeof data.usage === "object") {
-        const usage = {};
-        for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"])
-          if (Number.isSafeInteger(data.usage[key]) && data.usage[key] >= 0) usage[key] = data.usage[key];
-        if (Object.keys(usage).length) yield { type: "usage", usage };
-      }
-      if (typeof data.model === "string" && data.model.length <= 200 && data.model !== reportedModel) {
-        reportedModel = data.model;
-        yield { type: "model", model: data.model };
-      }
-      const delta = data.choices?.[0]?.delta;
-      // Keep provider reasoning internal, only for continuing this tool round.
-      if (typeof delta?.reasoning_content === "string")
-        reasoningContent = (reasoningContent || "") + delta.reasoning_content;
-      if (delta?.content) yield { type: "text", text: delta.content };
-      for (const item of delta?.tool_calls || []) {
-        const c = calls.get(item.index) || {
-          id: "",
-          type: "function",
-          function: { name: "", arguments: "" },
-        };
-        if (item.id) c.id = item.id;
-        if (item.function?.name) c.function.name += item.function.name;
-        if (item.function?.arguments)
-          c.function.arguments += item.function.arguments;
-        calls.set(item.index, c);
-      }
-    }
-  }
-  pending += decoder.decode();
-  const tail = pending.trim();
-  if (tail.startsWith("data:") && tail.slice(5).trim() !== "[DONE]") {
-    const data = JSON.parse(tail.slice(5));
+  function* handleLine(rawLine) {
+    const line = rawLine.trim();
+    if (!line.startsWith("data:") || line.slice(5).trim() === "[DONE]") return;
+    const data = JSON.parse(line.slice(5));
     if (data.error) throw new Error(data.error.message || "模型流返回错误");
+    if (data.usage && typeof data.usage === "object") {
+      const usage = {};
+      for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"])
+        if (Number.isSafeInteger(data.usage[key]) && data.usage[key] >= 0) usage[key] = data.usage[key];
+      if (Object.keys(usage).length) yield { type: "usage", usage };
+    }
+    if (typeof data.model === "string" && data.model.length <= 200 && data.model !== reportedModel) {
+      reportedModel = data.model;
+      yield { type: "model", model: data.model };
+    }
     const delta = data.choices?.[0]?.delta;
+    // Keep provider reasoning internal, only for continuing this tool round.
     if (typeof delta?.reasoning_content === "string")
       reasoningContent = (reasoningContent || "") + delta.reasoning_content;
     if (delta?.content) yield { type: "text", text: delta.content };
     for (const item of delta?.tool_calls || []) {
-      const c = calls.get(item.index) || { id: "", type: "function", function: { name: "", arguments: "" } };
+      const c = calls.get(item.index) || {
+        id: "",
+        type: "function",
+        function: { name: "", arguments: "" },
+      };
       if (item.id) c.id = item.id;
       if (item.function?.name) c.function.name += item.function.name;
-      if (item.function?.arguments) c.function.arguments += item.function.arguments;
+      if (item.function?.arguments)
+        c.function.arguments += item.function.arguments;
       calls.set(item.index, c);
     }
   }
+  for await (const chunk of r.body) {
+    pending += decoder.decode(chunk, { stream: true });
+    let newline;
+    while ((newline = pending.indexOf("\n")) >= 0) {
+      const rawLine = pending.slice(0, newline);
+      pending = pending.slice(newline + 1);
+      yield* handleLine(rawLine);
+    }
+  }
+  pending += decoder.decode();
+  if (pending.trim()) yield* handleLine(pending);
   if (calls.size) yield { type: "tools", calls: [...calls.values()], reasoningContent };
 }
 export async function transcribe(profile, pcm, context, signal) {

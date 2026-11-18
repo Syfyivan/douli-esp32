@@ -100,3 +100,23 @@ test("failed prewarm is retried on wake and invalidation cancels an old request"
   assert.equal((await collect(cache.source(blank, new AbortController().signal))).length, 0);
   assert.equal(calls, 5, "blank greeting must not synthesize empty audio");
 });
+
+test("Volcengine streamingTts greeting warms even when baseUrl uses the default empty value", async t => {
+  let calls = 0;
+  const cache = new GreetingAudio(async function* () { calls++; yield Buffer.alloc(640, 9); });
+  t.after(() => cache.close());
+  const config = {
+    assistant: { greeting: "我在。" },
+    input: { ttsProvider: "volcengine" },
+    models: {
+      tts: { baseUrl: "", model: "", voice: "", pcmSampleRate: 24000, apiKey: "" },
+      streamingTts: { baseUrl: "", model: "seed-tts-2.0", voice: "zh_female_vv_uranus_bigtts", pcmSampleRate: 24000, apiKey: "test-key" },
+    },
+  };
+  await cache.warm(config);
+  assert.equal(cache.snapshot().state, "ready");
+  assert.equal(calls, 1);
+  const source = cache.source(config, new AbortController().signal);
+  assert.equal(source.cacheHit, true);
+  assert.equal((await collect(source))[0], 9);
+});

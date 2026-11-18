@@ -1354,7 +1354,7 @@ export class VoiceConnection {
           this.mark(turn, "firstTextMs", Date.now() - turn.lastSpeechAt);
           if (!nativeUsed) {
             if (!turn.mediation) remote?.cancel(remoteTurn);
-            if (useStreamingTts && !streamingSpeech && event.text) {
+            if (useStreamingTts && !streamingSpeech && !speechError && event.text.trim()) {
               try { startStreamingSpeech(); } catch (error) { speechError ||= error; }
             }
             if (streamingSpeech) {
@@ -1499,6 +1499,7 @@ export class VoiceConnection {
           this.send({ type: "tts", state: "sentence_start", text: currentText(), segment_id: segment.id, turn_id: turn?.id ?? this.call.turnId,
             ...(playbackGain != null ? { playback_gain: playbackGain } : {}) });
         }
+        segment.text = currentText();
         segment.durationMs += 20;
         if ((this.ws.readyState ?? WebSocket.OPEN) !== WebSocket.OPEN) return;
         const data = this.options.browser ? frame : this.encoder.encode(frame, 320);

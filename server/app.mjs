@@ -20,7 +20,7 @@ import { MemoryService } from "./memory-service.mjs";
 import { saveEntry, removeEntry, listEntries, getEntry } from "./diary.mjs";
 import { embeddingProfile, rerankProfile } from "./memory-search.mjs";
 import { recordCorrection } from "./input.mjs";
-import { complete, synthesize, embed, rerank, speechProfile } from "./providers.mjs";
+import { complete, synthesize, embed, rerank, speechProfile, markVolcengineTts } from "./providers.mjs";
 import { wav } from "./audio.mjs";
 import { HealthService, registerHealthRoutes } from "./health-service.mjs";
 import { SyncService, registerSyncRoutes } from "./sync-service.mjs";
@@ -160,7 +160,7 @@ export async function createApplication({
     configured: Object.fromEntries(
       Object.entries(store.settings().models).map(([k, v]) => [
         k,
-        !!v.baseUrl && !!v.model,
+        k === "streamingTts" ? !!v.model && !!v.voice && !!v.apiKey : !!v.baseUrl && !!v.model,
       ]),
     ),
   }));
@@ -239,8 +239,11 @@ export async function createApplication({
   admin.post("/api/models/voice-preview", async (req, reply) => {
     const settings = store.settings();
     if (req.body?.kind && !["tts", "streamingTts"].includes(req.body.kind)) throw new Error("未知的语音合成配置");
+    const profile = req.body?.kind === "streamingTts"
+      ? markVolcengineTts(settings.models.streamingTts)
+      : req.body?.kind ? settings.models[req.body.kind] : speechProfile(settings);
     const audio = await synthesize(
-      req.body?.kind ? settings.models[req.body.kind] : speechProfile(settings),
+      profile,
       text(req.body?.text || settings.assistant.greeting, 300),
       AbortSignal.timeout(30000),
     );
