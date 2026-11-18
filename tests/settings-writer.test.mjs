@@ -48,3 +48,19 @@ test("a failed older write cannot discard a newer value queued during the reques
   assert.deepEqual(saved, [{ start: "23:30", end: "08:00" }]);
   assert.equal(writer.snapshot().status, "saved");
 });
+
+test("an update scheduled immediately when a flush settles starts a fresh write without stranding pending state", async () => {
+  const writes = [];
+  const writer = new SettingsWriter({
+    write: async patch => { writes.push(patch); return patch; },
+    saved() {}, changed() {}, failed: assert.fail,
+  });
+  let second;
+  const first = writer.update({ volume: 0.4 }).then(() => {
+    second = writer.update({ volume: 0.6 });
+  });
+  await first;
+  await second;
+  assert.deepEqual(writes, [{ volume: 0.4 }, { volume: 0.6 }]);
+  assert.deepEqual(writer.snapshot(), { patch: {}, status: "saved", error: "" });
+});

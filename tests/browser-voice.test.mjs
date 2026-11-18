@@ -224,3 +224,36 @@ test("completed playback segments are never downgraded to interrupted on mid-tur
   void voice.start(null, "auto");
   assert.equal(createdAfterClose, false);
 });
+
+test("AudioWorklet capture resamples 48 kHz 128-sample blocks to exact 16 kHz frames without sample drift", async t => {
+  let Processor;
+  const messages = [];
+  globalThis.AudioWorkletProcessor = class {
+    port = { postMessage: data => messages.push(data) };
+  };
+  globalThis.registerProcessor = (_name, Cls) => { Processor = Cls; };
+  globalThis.sampleRate = 48000;
+  t.after(() => {
+    delete globalThis.AudioWorkletProcessor;
+    delete globalThis.registerProcessor;
+    delete globalThis.sampleRate;
+  });
+  await import("../web/capture.js");
+  const capture = new Processor();
+  // 76 blocks * 128 samples = 9,728 samples at 48 kHz (>= 9,601 needed for 3,200 output samples).
+  for (let b = 0; b < 76; b++) {
+    const block = new Float32Array(128);
+    for (let i = 0; i < 128; i++) {
+      const sampleIndex = b * 128 + i;
+      block[i] = Math.sin((2 * Math.PI * 440 * sampleIndex) / 48000) * 0.5;
+    }
+    capture.process([[block]]);
+  }
+  assert.equal(messages.length, 10, "76 blocks (9728 @ 48kHz -> 3242 @ 16kHz) must produce exactly 10 frames of 320 samples");
+  const combined = new Int16Array(3200);
+  messages.forEach((m, idx) => combined.set(new Int16Array(m.pcm), idx * 320));
+  for (let k = 0; k < 3200; k++) {
+    const expected = Math.round(Math.sin((2 * Math.PI * 440 * k) / 16000) * 0.5 * 32767);
+    assert.ok(Math.abs(combined[k] - expected) <= 1, `sample ${k} drifted: got ${combined[k]}, expected ${expected}`);
+  }
+});

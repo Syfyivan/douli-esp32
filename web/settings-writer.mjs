@@ -16,22 +16,26 @@ export class SettingsWriter {
     for (const [key, value] of Object.entries(patch)) this.pending.set(key, { value });
     this.error = "";
     this.changed(this.snapshot());
-    this.running ||= this.flush().finally(() => { this.running = null; });
+    this.running ||= this.flush();
     return this.running;
   }
   async flush() {
-    while (this.pending.size) {
-      const batch = new Map(this.pending);
-      try {
-        const result = await this.write(Object.fromEntries([...batch].map(([key, entry]) => [key, entry.value])));
-        this.saved(result);
-        this.error = "";
-      } catch (error) {
-        this.error = error.message;
-        this.failed(error);
+    try {
+      while (this.pending.size) {
+        const batch = new Map(this.pending);
+        try {
+          const result = await this.write(Object.fromEntries([...batch].map(([key, entry]) => [key, entry.value])));
+          this.saved(result);
+          this.error = "";
+        } catch (error) {
+          this.error = error.message;
+          this.failed(error);
+        }
+        for (const [key, entry] of batch) if (this.pending.get(key) === entry) this.pending.delete(key);
+        this.changed(this.snapshot());
       }
-      for (const [key, entry] of batch) if (this.pending.get(key) === entry) this.pending.delete(key);
-      this.changed(this.snapshot());
+    } finally {
+      this.running = null;
     }
   }
 }
