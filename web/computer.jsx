@@ -12,11 +12,17 @@ export function ComputerTasksPanel({ api, notify, Section, Field, Button, Toggle
   const [loadError, setLoadError] = useState("");
   const pending = useRef(new Map());
   useEffect(() => {
-    let alive = true, timer;
+    let alive = true, timer, loaded = false;
     const load = async () => {
+      clearTimeout(timer);
+      if (loaded && document.hidden) {
+        if (alive) timer = setTimeout(load, 3000);
+        return;
+      }
       try {
         const data = await api("/computer");
         if (!alive) return;
+        loaded = true;
         setConfig(old => old || data.config); setTasks(data.tasks); setLoadError("");
         if (selected) {
           const task = await api(`/computer/tasks/${selected}`);
@@ -25,7 +31,9 @@ export function ComputerTasksPanel({ api, notify, Section, Field, Button, Toggle
       } catch (error) { if (alive) setLoadError(error.message); }
       finally { if (alive) timer = setTimeout(load, 3000); }
     };
-    void load(); return () => { alive = false; clearTimeout(timer); };
+    const onVisible = () => { if (!document.hidden && alive) void load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    void load(); return () => { alive = false; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [selected]);
   const run = async (name, fn) => {
     setBusy(name);

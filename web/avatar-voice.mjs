@@ -22,11 +22,13 @@ export class AvatarVoice extends BrowserVoice {
     this.onAvatarStatus = onAvatarStatus;
   }
   async start(sessionId, route) {
+    if (this.closed) return;
     try {
       // Unlock audio during the original click, before waiting for cloud signalling.
       this.context = new AudioContext(); this.captureContext = new AudioContext();
       void this.context.resume(); void this.captureContext.resume();
       await this.avatar.prepareAudio(this.context);
+      if (this.closed) return;
       this.onAvatarStatus?.("connecting");
       await this.avatar.start();
       if (this.closed) return;

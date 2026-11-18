@@ -7,19 +7,27 @@ export function BackendSelection({ id, api, Button, Field, notify }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const initialized = useRef(false);
   useEffect(() => {
-    let cancelled = false, timer;
+    let cancelled = false, timer, loaded = false;
     const refresh = async () => {
+      clearTimeout(timer);
+      if (loaded && document.hidden) {
+        if (!cancelled) timer = setTimeout(refresh, 4000);
+        return;
+      }
       try {
         const value = await api(`/devices/${encodeURIComponent(id)}/backend`);
         if (!cancelled) {
+          loaded = true;
           setStatus(value); setError("");
           if (!initialized.current) { setMode(value.mode); initialized.current = true; }
         }
       } catch (e) { if (!cancelled) setError(e.message); }
       if (!cancelled) timer = setTimeout(refresh, 4000);
     };
+    const onVisible = () => { if (!document.hidden && !cancelled) void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
     void refresh();
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => { cancelled = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [id, api]);
   const available = kind => status?.targets.some(t => t.kind === kind && t.available);
   const canSelect = kind => kind === "auto" ? available("computer") && available("phone") : available(kind);

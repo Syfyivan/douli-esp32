@@ -4,7 +4,13 @@ import { RefreshCw, Link, Copy } from "lucide-react";
 export function SyncPanel({ api, Section, Button, Field }) {
   const [state,setState]=useState(null),[invitation,setInvitation]=useState(""),[join,setJoin]=useState(""),[error,setError]=useState(""),[busy,setBusy]=useState(false);
   const load=()=>api("/sync/state").then(setState);
-  useEffect(()=>{load().catch(e=>setError(e.message));const timer=setInterval(()=>load().catch(()=>{}),5000);return()=>clearInterval(timer);},[]);
+  useEffect(()=>{
+    load().catch(e=>setError(e.message));
+    const poll=()=>{if(!document.hidden)load().catch(()=>{});};
+    const timer=setInterval(poll,5000);
+    document.addEventListener("visibilitychange",poll);
+    return()=>{clearInterval(timer);document.removeEventListener("visibilitychange",poll);};
+  },[]);
   const run=async action=>{if(busy)return;setBusy(true);setError("");try{await action();await load();}catch(e){setError(e.message);}finally{setBusy(false);}};
   return <Section title="手机与电脑同步" subtitle="两端连接同一个局域网。配对后同步聊天、记忆、健康档案与报告原件、模型设置和 ESP32 配对信息。传输内容加密。">
     {error&&<p className="health-error" role="alert">{error}</p>}

@@ -10,10 +10,16 @@ export class VisualInput {
     if (this.closed || generation !== this.generation) { stream.getTracks().forEach(t => t.stop()); return false; }
     this.stream = stream; this.video = video; this.source = source;
     video.srcObject = stream; video.muted = true; video.playsInline = true;
-    stream.getVideoTracks()[0].addEventListener("ended", () => this.stop(), { once: true });
+    stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+      if (this.stream === stream) this.stop();
+    }, { once: true });
     try { await video.play(); }
-    catch (e) { this.stop(); throw e; }
-    if (this.closed) return false;
+    catch (e) {
+      if (this.closed || generation !== this.generation) return false;
+      this.stop();
+      throw e;
+    }
+    if (this.closed || generation !== this.generation) return false;
     this.send({ type: "vision", action: "start", source });
     return true;
   }

@@ -1050,37 +1050,6 @@ details > p {
   }
 }
 @media (max-width: 820px) {
-  .sidebar {
-    width: 72px;
-    padding: 24px 10px;
-  }
-  .brand {
-    justify-content: center;
-  }
-  .brand > span:last-child,
-  .nav-label,
-  .sidebar-bottom,
-  .nav-dot {
-    display: none;
-  }
-  .sidebar nav {
-    margin-top: 35px;
-  }
-  .sidebar nav button {
-    font-size: 0;
-    gap: 0;
-    justify-content: center;
-    padding: 15px;
-  }
-  .sidebar nav svg {
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-  }
-  main {
-    margin-left: 72px;
-    width: calc(100% - 72px);
-  }
   .history {
     width: 165px;
   }
@@ -1202,9 +1171,9 @@ details > p {
 @media (max-width: 640px) {
   .app { min-height: 100dvh; padding-bottom: 68px; }
   .sidebar { inset: auto 0 0; width: 100%; height: 68px; padding: 4px 6px; border-right: 0; border-top: 1px solid var(--line); }
-  .sidebar .brand, .sidebar .nav-label, .sidebar-bottom { display: none; }
-  .sidebar nav { margin: 0; display: flex; flex-direction: row; flex: 1; gap: 2px; }
-  .sidebar nav button { flex: 1; flex-direction: column; padding: 7px 2px; font-size: 10px; gap: 5px; white-space: nowrap; }
+  .sidebar .brand, .sidebar .nav-label, .sidebar-bottom, .sidebar > select { display: none; }
+  .sidebar nav { margin: 0; display: flex; flex-direction: row; flex: 1; gap: 2px; min-width: 0; }
+  .sidebar nav button { flex: 1; min-width: 0; flex-direction: column; padding: 7px 2px; font-size: 10px; gap: 5px; white-space: nowrap; }
   main { margin-left: 0; width: 100%; }
   header { height: 44px; padding: 0 16px; }
   .chat-layout { height: calc(100dvh - 112px); position: relative; }

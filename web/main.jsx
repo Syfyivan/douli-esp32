@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChatScroll } from "./chat-scroll.mjs";
 import { createRoot } from "react-dom/client";
 import {
@@ -215,8 +215,10 @@ function App() {
     if (page === "chat") return;
     reload().catch((e) => notify(e.message, true));
     if (["memory", "assistant"].includes(page)) {
-      const timer = setInterval(() => reload().catch(() => {}), 5000);
-      return () => clearInterval(timer);
+      const poll = () => { if (!document.hidden) reload().catch(() => {}); };
+      const timer = setInterval(poll, 5000);
+      document.addEventListener("visibilitychange", poll);
+      return () => { clearInterval(timer); document.removeEventListener("visibilitychange", poll); };
     }
   }, [page]);
   useEffect(() => {
@@ -295,6 +297,9 @@ function App() {
               }[page]
             }
           </b></span>
+          {state.people?.people.length > 0 && <select className="mobile-person-select" aria-label="切换个人档案" value={selectedPerson()} onChange={e => selectPerson(e.target.value)}>
+            <option value="">原有档案</option>{state.people.people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>}
           <span className="local-badge"><LockKeyhole size={13} /> 本机空间</span>
         </header>
         {["chat", "video"].includes(page) && <Chat key={page} {...shared} view={page} requestedSession={page === "chat" ? requestedSession : null} />}
@@ -341,10 +346,28 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     [routeInfo, setRouteInfo] = useState(null),
     [busy, setBusy] = useState(false),
     [voiceState, setVoiceState] = useState("off"),
-    [level, setLevel] = useState(0),
     [partial, setPartial] = useState(""),
     [metrics, setMetrics] = useState(null);
   const [voiceFlags, setVoiceFlags] = useState({}), [captions, setCaptions] = useState(() => localStorage.getItem("douli.captions") !== "off"), [spokenCaption, setSpokenCaption] = useState("");
+  const pulseRef = useRef(null), videoDotRef = useRef(null);
+  const voiceStateRef = useRef(voiceState), voiceFlagsRef = useRef(voiceFlags);
+  voiceStateRef.current = voiceState;
+  voiceFlagsRef.current = voiceFlags;
+  const updateLevel = useCallback((lv) => {
+    if (pulseRef.current) pulseRef.current.style.transform = `scale(${1 + Math.min(lv * 8, 1)})`;
+    if (videoDotRef.current) {
+      const live = voiceStateRef.current !== "off" && !voiceFlagsRef.current.muted && !voiceFlagsRef.current.paused;
+      videoDotRef.current.style.transform = `scale(${live ? 1 + Math.min(lv * 5, 0.5) : 1})`;
+    }
+  }, []);
+  const handlersRef = useRef({ act, notify });
+  handlersRef.current = { act, notify };
+  const handleCorrect = useCallback((m, value) => handlersRef.current.act(async () => {
+    await api("/messages/" + m.id + "/correction", "POST", { text: value });
+    const d = await api("/sessions/" + m.session_id);
+    if (activeSession.current?.id === m.session_id) setMessages(d.messages);
+    handlersRef.current.notify("已更正原文；可到设置中审核词典建议");
+  }), []);
   const voiceTurn = useRef(0);
   const [voiceModeLabel, setVoiceModeLabel] = useState("");
   const [mediating, setMediating] = useState(false);
@@ -376,8 +399,10 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
   };
   useEffect(() => {
     const t = setTimeout(loadSessions, 150);
-    const poll = setInterval(loadSessions, 5000);
-    return () => { clearTimeout(t); clearInterval(poll); listing.current++; };
+    const poll = () => { if (!document.hidden) loadSessions(); };
+    const timer = setInterval(poll, 5000);
+    document.addEventListener("visibilitychange", poll);
+    return () => { clearTimeout(t); clearInterval(timer); document.removeEventListener("visibilitychange", poll); listing.current++; };
   }, [query]);
   useEffect(() => {
     if (requestedSession) open(requestedSession).catch(e => notify(e.message, true));
@@ -386,13 +411,18 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     if (!session?.id || composing || voiceState !== "off") return;
     let disposed = false;
     const id = session.id;
-    const poll = setInterval(() => api("/sessions/" + id).then(data => {
-      if (!disposed && activeSession.current?.id === id) {
-        setCurrent(data.session);
-        setMessages(old => JSON.stringify(old) === JSON.stringify(data.messages) ? old : data.messages);
-      }
-    }).catch(() => {}), 5000);
-    return () => { disposed = true; clearInterval(poll); };
+    const refresh = () => {
+      if (document.hidden) return;
+      api("/sessions/" + id).then(data => {
+        if (!disposed && activeSession.current?.id === id) {
+          setCurrent(data.session);
+          setMessages(old => JSON.stringify(old) === JSON.stringify(data.messages) ? old : data.messages);
+        }
+      }).catch(() => {});
+    };
+    const poll = setInterval(refresh, 5000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { disposed = true; clearInterval(poll); document.removeEventListener("visibilitychange", refresh); };
   }, [session?.id, composing, voiceState]);
   useEffect(
     () => () => {
@@ -481,12 +511,15 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
       if (e.type === "error") notify(e.message, true);
       delta.current = "";
       setPending("");
-      if (activeSession.current)
-        api("/sessions/" + activeSession.current.id)
-          .then((d) => setMessages(d.messages))
+      const sid = activeSession.current?.id;
+      if (sid)
+        api("/sessions/" + sid)
+          .then((d) => { if (activeSession.current?.id === sid) setMessages(d.messages); })
           .catch(() => {});
     }
   };
+  const eventRef = useRef(event);
+  eventRef.current = event;
   const stop = () => {
     setMediating(false);
     visual.current?.stop();
@@ -496,6 +529,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     setBusy(false);
     setPartial("");
     setSpokenCaption("");
+    updateLevel(0);
   };
   useEffect(() => {
     const background = () => { visual.current?.stop(); if (!voice.current?.native) stop(); };
@@ -511,7 +545,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
       if (view === "video" || selectedPerson() || !window.douliNativeVoice || (voice.current && !voice.current.closed)) return;
       const snapshot = window.douliNativeVoice.send({ action: "snapshot" });
       if (snapshot.active) {
-        const client = new NativeVoice({ onEvent: event, onStatus: setVoiceState });
+        const client = new NativeVoice({ onEvent: e => eventRef.current(e), onStatus: setVoiceState });
         voice.current = client;
         client.restore();
       }
@@ -567,6 +601,13 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
       return;
     }
     controller.current = new AbortController();
+    let terminal = false;
+    const handleLine = (line) => {
+      if (!line) return;
+      const parsed = JSON.parse(line);
+      if (["done", "aborted", "error"].includes(parsed.type)) terminal = true;
+      event(parsed);
+    };
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
@@ -590,12 +631,23 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
         while ((at = data.indexOf("\n")) !== -1) {
           const line = data.slice(0, at);
           data = data.slice(at + 1);
-          if (line) event(JSON.parse(line));
+          handleLine(line);
         }
       }
+      data += decoder.decode();
+      if (data.trim()) handleLine(data.trim());
     } catch (e) {
       if (e.name !== "AbortError") notify(e.message, true);
     } finally {
+      if (!terminal) {
+        delta.current = "";
+        setPending("");
+        setSearchProgress("");
+        const sid = activeSession.current?.id;
+        if (sid) api("/sessions/" + sid).then((d) => {
+          if (activeSession.current?.id === sid) setMessages(d.messages);
+        }).catch(() => {});
+      }
       setBusy(false);
       loadSessions();
     }
@@ -625,12 +677,12 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     voiceTurn.current = 0;
     const Client = withAvatar ? AvatarVoice : window.douliNativeVoice && !selectedPerson() ? NativeVoice : BrowserVoice;
     const client = new Client({
-      onEvent: event,
+      onEvent: (e) => eventRef.current(e),
       onStatus: (s) => {
         setVoiceState(s);
         if (s === "off") { setBusy(false); visual.current?.stop(); }
       },
-      onLevel: setLevel,
+      onLevel: updateLevel,
       video: avatarVideo.current, audio: avatarAudio.current, volume: avatarVolume, onAvatarStatus: setAvatarStatus,
     });
     voice.current = client;
@@ -649,7 +701,10 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     } catch (e) { notify(e.name === "NotAllowedError" ? "没有开启画面分享" : e.message, true); }
   };
   const beginText = () => { initialized.current = true; opening.current++; chatScroll.reset(); setComposing(true); };
-  const visibleSessions = sessions.filter(s => (sourceFilter === "all" || conversationSource(s.source).kind === sourceFilter) && inDateRange(s.updated_at, dateFilter));
+  const visibleSessions = useMemo(
+    () => sessions.filter(s => (sourceFilter === "all" || conversationSource(s.source).kind === sourceFilter) && inDateRange(s.updated_at, dateFilter)),
+    [sessions, sourceFilter, dateFilter],
+  );
   const summary = (state.memorySummaries || []).find(s => s.session_id === session?.id);
   const source = conversationSource(session?.source, state.devices);
   if (view === "video") return <VideoCallPage
@@ -658,10 +713,10 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     faceName={state.settings.avatar?.faceName}
     videoRef={avatarVideo}
     audioRef={avatarAudio}
+    dotRef={videoDotRef}
     voiceState={voiceState}
     avatarStatus={avatarStatus}
     flags={voiceFlags}
-    level={level}
     captions={captions}
     caption={partial || spokenCaption}
     captionSpeaker={partial ? "你" : state.settings.assistant.name}
@@ -719,16 +774,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
               key={m.id}
               message={m}
               name={state.settings.assistant.name}
-              onCorrect={(value) =>
-                act(async () => {
-                  await api("/messages/" + m.id + "/correction", "POST", {
-                    text: value,
-                  });
-                  const d = await api("/sessions/" + m.session_id);
-                  setMessages(d.messages);
-                  notify("已更正原文；可到设置中审核词典建议");
-                })
-              }
+              onCorrect={handleCorrect}
             />
           ))}
           {pending && (voiceState === "off" || captions) && (
@@ -758,10 +804,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
           {voiceState !== "off" && (
             <div className="call-panel">
             <div className="voice-strip">
-              <span
-                className="pulse"
-                style={{ transform: `scale(${1 + Math.min(level * 8, 1)})` }}
-              />
+              <span ref={pulseRef} className="pulse" />
               <span>
                 {
                   {
@@ -785,8 +828,8 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
               <Button onClick={() => voice.current?.control(voiceFlags.paused ? "resume" : "pause")}>{voiceFlags.paused ? "继续通话" : "暂停通话"}</Button>
               <Button onClick={() => { setCaptions(!captions); localStorage.setItem("douli.captions", captions ? "off" : "on"); }}>{captions ? "隐藏字幕" : "显示字幕"}</Button>
               <Button onClick={stop}>结束通话</Button>
-              {!visualSource && <Button disabled={voiceState === "connecting"} onClick={() => shareVisual("camera")}>开启摄像头</Button>}
-              {!visualSource && (voice.current?.native || navigator.mediaDevices?.getDisplayMedia) && <Button disabled={voiceState === "connecting"} onClick={() => shareVisual("screen")}>共享屏幕</Button>}
+              {!visualSource && !window.douliDesktop && <Button disabled={voiceState === "connecting"} onClick={() => shareVisual("camera")}>开启摄像头</Button>}
+              {!visualSource && !window.douliDesktop && (voice.current?.native || navigator.mediaDevices?.getDisplayMedia) && <Button disabled={voiceState === "connecting"} onClick={() => shareVisual("screen")}>共享屏幕</Button>}
               {visualSource && <Button onClick={() => { if (voice.current?.native && visualSource === "screen") voice.current.stopScreen(); else visual.current?.stop(); }}>停止画面分享</Button>}
               {voice.current?.native && <select aria-label="通话音频设备" value={voiceFlags.audioRoute || "auto"} onChange={e => voice.current?.send({ type: "audio_route", route: e.target.value })}><option value="auto">系统音频设备</option><option value="speaker">扬声器</option><option value="earpiece">听筒</option><option value="bluetooth">蓝牙耳机</option></select>}
             </div>
@@ -833,9 +876,10 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
                   icon={Square}
                   onClick={() => {
                     controller.current?.abort();
-                    if (session)
+                    const targetId = activeSession.current?.id || session?.id;
+                    if (targetId)
                       api(
-                        "/sessions/" + session.id + "/abort",
+                        "/sessions/" + targetId + "/abort",
                         "POST",
                         {},
                       ).catch(() => {});
@@ -872,7 +916,7 @@ function Chat({ state, act, notify, setPage, openSettings, requestedSession, ope
     </div>
   );
 }
-function Message({ message: m, name, onCorrect }) {
+const Message = memo(function Message({ message: m, name, onCorrect }) {
   const [editing, setEditing] = useState(false),
     [value, setValue] = useState(m.text),
     [raw, setRaw] = useState(false);
@@ -901,7 +945,7 @@ function Message({ message: m, name, onCorrect }) {
             <Button
               primary
               onClick={() => {
-                onCorrect(value);
+                onCorrect(m, value);
                 setEditing(false);
               }}
             >
@@ -950,7 +994,7 @@ function Message({ message: m, name, onCorrect }) {
       </div>
     </div>
   );
-}
+});
 
 function RoutingDetails({ routing: r }) {
   if (!r) return null;
@@ -1009,7 +1053,7 @@ function ToolResults({ items }) {
   ) : null;
 }
 function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models" }) {
-  const [s, setS] = useState(structuredClone(state.settings)),
+  const [s, setS] = useState(() => structuredClone(state.settings)),
     [kind, setKind] = useState("daily"),
     [testBusy, setTestBusy] = useState(false),
     [searchBusy, setSearchBusy] = useState(false),
@@ -1030,9 +1074,16 @@ function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models
     }));
   const update = (section, key, value) =>
     setS((old) => ({ ...old, [section]: { ...old[section], [key]: value } }));
+  const settingsPayload = () => ({
+    models: s.models,
+    input: s.input,
+    memory: s.memory,
+    privacy: s.privacy,
+    search: s.search,
+  });
   const save = () =>
     act(async () => {
-      const result = await api("/settings", "PUT", s);
+      const result = await api("/settings", "PUT", settingsPayload());
       setS(result);
       notify("设置已保存");
     });
@@ -1163,7 +1214,8 @@ function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models
                 act(async () => {
                   setTestBusy(true);
                   try {
-                    await api("/settings", "PUT", s);
+                    const saved = await api("/settings", "PUT", settingsPayload());
+                    setS(saved);
                     const r = await api("/models/test", "POST", { kind });
                     notify(
                       `${r.output} · ${(r.latencyMs / 1000).toFixed(1)} 秒`,
@@ -1186,7 +1238,10 @@ function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models
                     models: { [kind]: { apiKey: "" } },
                     clearKeys: [kind],
                   });
-                  setS(result);
+                  setS((old) => ({
+                    ...old,
+                    models: { ...old.models, [kind]: result.models[kind] },
+                  }));
                   notify("已清除密钥");
                 }
               })
@@ -1201,7 +1256,8 @@ function SettingsPage({ state, act, notify, ui, updateUi, initialPanel = "models
               icon={Volume2}
               onClick={() =>
                 act(async () => {
-                  await api("/settings", "PUT", s);
+                  const saved = await api("/settings", "PUT", settingsPayload());
+                  setS(saved);
                   const r = await fetch("/api/models/voice-preview", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -1514,8 +1570,10 @@ function Devices({ state, act, notify, reload }) {
     [ruleType, setRuleType] = useState("time"),
     [deviceId, setDeviceId] = useState("");
   useEffect(() => {
-    const timer = setInterval(() => reload().catch(() => {}), 5000);
-    return () => clearInterval(timer);
+    const poll = () => { if (!document.hidden) reload().catch(() => {}); };
+    const timer = setInterval(poll, 5000);
+    document.addEventListener("visibilitychange", poll);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", poll); };
   }, []);
   return (
     <>

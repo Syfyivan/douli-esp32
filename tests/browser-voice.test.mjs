@@ -158,3 +158,69 @@ test("independent controls preserve capture while output holds, and reject old a
   assert.equal(voice.context.state, "running");
   voice.stop();
 });
+
+test("completed playback segments are never downgraded to interrupted on mid-turn barge or next turn start", t => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: { OPEN: 1 } });
+  t.after(() => previous ? Object.defineProperty(globalThis, "WebSocket", previous) : delete globalThis.WebSocket);
+  const sent = [], statuses = [], played = [];
+  const voice = new BrowserVoice({ onStatus: s => statuses.push(s), onEvent() {} });
+  voice.ws = { readyState: 1, send: value => sent.push(JSON.parse(value)), close() {} };
+  voice.context = {
+    currentTime: 0, state: "running", destination: {},
+    async suspend() {}, async resume() {}, close: async () => {},
+    createBuffer: (_, length, rate) => ({ duration: length / rate, getChannelData: () => new Float32Array(length) }),
+    createBufferSource: () => {
+      const source = { connect() {}, disconnect() {}, start() {}, stop() {} };
+      played.push(source);
+      return source;
+    },
+  };
+  voice.receive({ type: "hello", features: { turn_ids: true } });
+
+  // Turn 1: two sentences, first completes, second interrupted mid-way.
+  voice.receive({ type: "tts", state: "start", turn_id: 1 });
+  voice.receive({ type: "tts", state: "sentence_start", turn_id: 1, segment_id: 0, text: "第一句播完。" });
+  voice.play(new Int16Array(1600).buffer); // 100ms
+  voice.receive({ type: "tts", state: "sentence_end", turn_id: 1, segment_id: 0, duration_ms: 100 });
+  played[0].onended();
+  assert.equal(sent.filter(e => e.type === "playback" && e.turn_id === 1 && e.segment_id === 0).at(-1)?.state, "complete");
+
+  voice.receive({ type: "tts", state: "sentence_start", turn_id: 1, segment_id: 1, text: "第二句被打断。" });
+  voice.play(new Int16Array(1600).buffer);
+  voice.context.currentTime = 0.165;
+  voice.interrupt();
+  assert.equal(
+    sent.some(e => e.type === "playback" && e.turn_id === 1 && e.segment_id === 0 && e.state === "interrupted"),
+    false,
+    "already completed segment 0 must not be marked interrupted",
+  );
+  assert.equal(
+    sent.some(e => e.type === "playback" && e.turn_id === 1 && e.segment_id === 1 && e.state === "interrupted"),
+    true,
+  );
+
+  // Turn 2 finishes completely; Turn 3 start must not re-report Turn 2 segments as interrupted.
+  voice.receive({ type: "tts", state: "start", turn_id: 2 });
+  voice.receive({ type: "tts", state: "sentence_start", turn_id: 2, segment_id: 0, text: "完整播完的一轮。" });
+  voice.play(new Int16Array(1600).buffer);
+  voice.receive({ type: "tts", state: "sentence_end", turn_id: 2, segment_id: 0, duration_ms: 100 });
+  voice.receive({ type: "tts", state: "stop", turn_id: 2 });
+  played[2].onended();
+  assert.equal(statuses.at(-1), "listening");
+
+  voice.receive({ type: "tts", state: "start", turn_id: 3 });
+  assert.equal(
+    sent.some(e => e.type === "playback" && e.turn_id === 2 && e.state === "interrupted"),
+    false,
+    "starting Turn 3 must not mark finished Turn 2 segments as interrupted",
+  );
+
+  // Calling start() on an already closed client is a safe no-op.
+  voice.stop();
+  let createdAfterClose = false;
+  globalThis.AudioContext = class { constructor() { createdAfterClose = true; } };
+  t.after(() => { delete globalThis.AudioContext; });
+  void voice.start(null, "auto");
+  assert.equal(createdAfterClose, false);
+});

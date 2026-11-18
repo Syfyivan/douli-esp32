@@ -2,13 +2,16 @@ import React, { useEffect, useState } from "react";
 import { Captions, Check, LoaderCircle, Mic, MicOff, MoreHorizontal, Pause, Phone, PhoneOff, Play, Settings, Square, Volume2 } from "lucide-react";
 
 export function VideoCallPage({
-  name, faceName, videoRef, audioRef, voiceState, avatarStatus, flags, level,
+  name, faceName, videoRef, audioRef, dotRef, voiceState, avatarStatus, flags, level = 0,
   captions, caption, captionSpeaker, volume, onStart, onStop, onMute, onPause,
   onSubmit, onInterrupt, onCaptions, onVolume, onUnlock, onSettings, metrics = {},
 }) {
   const active = voiceState !== "off";
   const connecting = active && voiceState === "connecting";
   const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (dotRef?.current && (!active || flags.muted || flags.paused)) dotRef.current.style.transform = "scale(1)";
+  }, [active, flags.muted, flags.paused, dotRef]);
   useEffect(() => {
     setElapsed(0);
     if (!active || connecting) return;
@@ -46,7 +49,7 @@ export function VideoCallPage({
     </div>
     <div className="video-room-bottom">
       <div className="video-room-status" role="status">
-        {connecting ? <LoaderCircle size={14} className="video-room-spinner" /> : <i className={active && !flags.paused ? "is-live" : ""} style={{ transform: `scale(${active && !flags.muted && !flags.paused ? 1 + Math.min(level * 5, 0.5) : 1})` }} />}
+        {connecting ? <LoaderCircle size={14} className="video-room-spinner" /> : <i ref={dotRef} className={active && !flags.paused ? "is-live" : ""} style={level ? { transform: `scale(${active && !flags.muted && !flags.paused ? 1 + Math.min(level * 5, 0.5) : 1})` } : undefined} />}
         <span>{status}</span>
       </div>
       <div className="video-room-controls">

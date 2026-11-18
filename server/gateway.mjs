@@ -1500,7 +1500,7 @@ export class VoiceConnection {
             ...(playbackGain != null ? { playback_gain: playbackGain } : {}) });
         }
         segment.durationMs += 20;
-        if (this.ws.readyState !== WebSocket.OPEN) return;
+        if ((this.ws.readyState ?? WebSocket.OPEN) !== WebSocket.OPEN) return;
         const data = this.options.browser ? frame : this.encoder.encode(frame, 320);
         this.ws.send(packAudio(data, this.version));
         pacer.sent();

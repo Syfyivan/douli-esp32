@@ -10,6 +10,7 @@ export class BrowserVoice {
     this.rejectedThrough = -1;
   }
   async start(sessionId, route) {
+    if (this.closed) return;
     try {
       // Separate clocks let output pause without suspending microphone capture.
       this.context ||= new AudioContext();
@@ -185,21 +186,34 @@ export class BrowserVoice {
     };
   }
   reportSegment(segment, force = false, interrupted = false) {
-    if (!segment) return;
+    if (!segment || (interrupted && segment.completed)) return;
     let playedMs = segment.completedMs;
     for (const source of this.sources) if (source.voiceSegment === segment)
       playedMs += Math.max(0, Math.min(source.voiceDuration, this.context.currentTime - source.voiceStart)) * 1000;
     playedMs = Math.round(playedMs);
-    if (!force && playedMs <= segment.lastReported) return;
-    const state = interrupted ? "interrupted" : !segment.started && playedMs > 0 ? "started" : segment.totalMs != null && playedMs >= segment.totalMs ? "complete" : "progress";
-    if (playedMs > 0) segment.started = true;
+    const done = !interrupted && segment.totalMs != null && playedMs >= segment.totalMs;
+    if (!force && playedMs <= segment.lastReported && !(done && !segment.completed)) return;
+    if (!interrupted && !segment.started && playedMs > 0) {
+      segment.started = true;
+      this.send({ type: "playback", turn_id: segment.turnId, segment_id: segment.id, played_ms: playedMs, state: "started" });
+      if (!done) {
+        segment.lastReported = playedMs;
+        return;
+      }
+    }
+    const state = interrupted ? "interrupted" : done ? "complete" : "progress";
+    if (done) segment.completed = true;
     segment.lastReported = playedMs;
     this.send({ type: "playback", turn_id: segment.turnId, segment_id: segment.id, played_ms: playedMs, state });
   }
   reportPlayback() { for (const segment of this.segments.values()) this.reportSegment(segment); }
   finishPlayback() {
     if (this.closed || this.sources.size) return;
-    if (this.playbackStopped) this.onStatus?.(this.flags.paused ? "paused" : "listening");
+    if (this.playbackStopped) {
+      this.segments.clear();
+      this.currentSegment = null;
+      this.onStatus?.(this.flags.paused ? "paused" : "listening");
+    }
   }
   stopPlayback() {
     this.reportPlayback();

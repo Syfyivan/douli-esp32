@@ -81,16 +81,29 @@ function Answer({ turn }) {
 function ReportPreview({ id, onClose }) {
   const [pages, setPages] = useState([]), [error, setError] = useState("");
   useEffect(() => {
+    const onKeyDown = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  useEffect(() => {
     let disposed = false, objectUrl;
+    const controller = new AbortController();
     (async () => {
-      const response = await fetch(personUrl(`/api/medical/reports/${id}/file`));
+      const response = await fetch(personUrl(`/api/medical/reports/${id}/file`), { signal: controller.signal });
       if (!response.ok) throw new Error("原始报告无法打开");
       if (response.headers.get("Content-Type")?.includes("pdf")) {
-        const parsed = await pdfPages(new Uint8Array(await response.arrayBuffer()));
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (disposed) return;
+        const parsed = await pdfPages(bytes);
         if (!disposed) setPages(parsed.map(p => p.image));
-      } else { objectUrl = URL.createObjectURL(await response.blob()); if (!disposed) setPages([objectUrl]); }
-    })().catch(e => { if (!disposed) setError(e.message); });
-    return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+      } else {
+        const blob = await response.blob();
+        if (disposed) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPages([objectUrl]);
+      }
+    })().catch(e => { if (!disposed && e.name !== "AbortError") setError(e.message); });
+    return () => { disposed = true; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [id]);
   return <div className="health-preview" role="dialog" aria-modal="true" aria-label="报告原件"><div className="health-preview-toolbar"><strong>报告原件</strong><button onClick={onClose}>关闭原件</button></div>
     {error && <p role="alert">{error}</p>}{!pages.length && !error && <p>正在读取原件…</p>}
