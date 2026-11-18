@@ -79,7 +79,10 @@ async function responseText(response, signal) {
   for await (const chunk of response.body) {
     signal.throwIfAborted();
     size += chunk.byteLength;
-    if (size > maxBytes) throw new Error("搜索结果过大");
+    if (size > maxBytes) {
+      await response.body.cancel?.();
+      throw new Error("搜索结果过大");
+    }
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -117,7 +120,9 @@ export async function searchWeb(config, query, signal, { fetchImpl = globalThis.
       response = await fetchImpl(endpoint, options);
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       await response.body?.cancel();
-      const next = new URL(response.headers.get("location"), endpoint);
+      const location = response.headers.get("location");
+      if (!location) throw new Error("搜索服务返回无效数据");
+      const next = new URL(location, endpoint);
       if (provider !== "bing" || next.protocol !== "https:" || next.username || next.password || next.port ||
           !["www.bing.com", "cn.bing.com"].includes(next.hostname) || hop === 2)
         throw new Error("搜索服务返回无效数据");

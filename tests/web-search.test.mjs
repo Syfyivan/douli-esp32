@@ -100,6 +100,11 @@ test("Bing regional redirects stay within fixed search hosts and never forward B
     } }), /无效数据/);
     assert.equal(attempts, 1);
   }
+  let missingLocationAttempts = 0;
+  await assert.rejects(searchWeb({}, "query", undefined, { fetchImpl: async () => {
+    missingLocationAttempts++; return new Response(null, { status: 302 });
+  } }), /无效数据/);
+  assert.equal(missingLocationAttempts, 1, "302 without Location must reject instead of requesting /null");
 });
 
 test("Brave keys travel only in headers; bad payloads, HTTP errors and huge responses fail safely", async () => {

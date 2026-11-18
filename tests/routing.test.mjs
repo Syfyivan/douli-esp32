@@ -49,6 +49,9 @@ test("local topic continuity keeps health privacy and source checks without swit
   const medical = await routeRequest({ text: "我该不该停药", history: previous("learning"), settings: s });
   assert.equal(medical.metadata.route, "health");
   assert.equal(medical.metadata.needsSearch, true);
+  const started = performance.now();
+  await routeRequest({ text: "我".repeat(16000), settings: s });
+  assert.ok(performance.now() - started < 40, "16k personal-subject input must complete in linear time");
   await assert.rejects(routeRequest({ text: "你好", settings: s, signal: AbortSignal.abort(new Error("cancelled")) }), /cancelled/);
 });
 

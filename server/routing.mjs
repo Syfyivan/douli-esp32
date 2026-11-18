@@ -5,8 +5,24 @@ const health = /医学|医疗|健康|症状|看病|生病|用药|药物|药量|�
 const learning = /学习|学会|教我|科普|讲解|讲讲|原理|课程|知识|入门|learn|teach|explain/i;
 const reasoning = /解题|证明|推导|算法|数学|代码|编程|分析|计算|debug|algorithm/i;
 const debate = /争论|判官|谁对|谁错|辩论|各执一词|辨析/;
-const personal = /(?:我|家人|孩子|宝宝|父母|妈妈|爸爸).*(?:吃药|停药|换药|用药|药量|剂量|手术|怀孕|投资|贷款|离职|辞职|签合同)|该不该|要不要.*(?:药|手术|投资|贷款|辞职)|能.*(?:一起吃|停药|加量)/;
+const personalSubject = /我|家人|孩子|宝宝|父母|妈妈|爸爸/;
+const personalTopic = /吃药|停药|换药|用药|药量|剂量|手术|怀孕|投资|贷款|离职|辞职|签合同/;
+const shouldTopic = /药|手术|投资|贷款|辞职/;
+const canTopic = /一起吃|停药|加量/;
 const continuation = /^(?:那|那么)?(?:继续(?:讲|说|解释)?|详细(?:一点|解释一下|讲讲)|展开(?:讲讲|说说)?|举个例子|再举个例子|为什么(?:呢)?|怎么理解|具体(?:呢|怎么做|应该怎么办)|应该怎么办|然后呢|还有呢|这个(?:呢|是什么意思)|那怎么办)[呀啊呢吧?？。！!\s]*$/;
+
+function isPersonal(text) {
+  if (text.includes("该不该")) return true;
+  for (const line of text.split(/\r?\n/)) {
+    const m = personalSubject.exec(line);
+    if (m && personalTopic.test(line.slice(m.index + m[0].length))) return true;
+    const shouldAt = line.indexOf("要不要");
+    if (shouldAt !== -1 && shouldTopic.test(line.slice(shouldAt + 3))) return true;
+    const canAt = line.indexOf("能");
+    if (canAt !== -1 && canTopic.test(line.slice(canAt + 1))) return true;
+  }
+  return false;
+}
 
 // Local topic hints only: preserve prompts and the encrypted health workflow.
 // Topics never choose a different model or make a classification API request.
@@ -29,7 +45,7 @@ export async function routeRequest({ text, requested = "auto", history = [], set
   const previousTopic = previous?.metadata?.routing?.route || previous?.route;
   const continued = !routes.includes(requested) && routes.includes(previousTopic) && continuation.test(text.trim());
   const route = continued ? previousTopic : chooseRoute(text, requested);
-  const personalDecision = personal.test(text) || (continued && !!previous?.metadata?.routing?.personalDecision);
+  const personalDecision = isPersonal(text) || (continued && !!previous?.metadata?.routing?.personalDecision);
   const profile = chatProfile(settings);
   return {
     profile,

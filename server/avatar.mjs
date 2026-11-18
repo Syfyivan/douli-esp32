@@ -27,8 +27,12 @@ export class SimliService {
     }
     return response;
   }
+  async readJson(response) {
+    try { return await response.json(); }
+    catch { throw new Error("Simli 返回了无法解析的数据"); }
+  }
   async faces() {
-    const data = await (await this.request("/faces")).json();
+    const data = await this.readJson(await this.request("/faces"));
     if (!Array.isArray(data)) throw new Error("Simli 形象列表格式异常");
     const own = data.filter(f => validId(f.id)).map(f => ({ id: f.id, name: String(f.name || f.face_name || `我的形象 ${f.id.slice(0, 8)}`).slice(0, 80) }));
     return [...own, ...presetFaces.filter(p => !own.some(f => f.id === p.id))];
@@ -41,14 +45,14 @@ export class SimliService {
       // Independent prerequisites: overlap their network waits; never cache tokens.
       const [ice, token] = await Promise.all([
         this.request("/compose/ice", { signal: control.signal }).then(async r => {
-          const value = await r.json();
+          const value = await this.readJson(r);
           if (!Array.isArray(value)) throw new Error("Simli 网络连接配置异常");
           return value;
         }),
         this.request("/compose/token", { method: "POST", signal: control.signal,
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ faceId,
             apiVersion: "v2", handleSilence: true, maxSessionLength: 1800, maxIdleTime: 120, audioInputFormat: "pcm16" }) }).then(async r => {
-          const value = await r.json();
+          const value = await this.readJson(r);
           if (typeof value.session_token !== "string" || !value.session_token || value.session_token === "FAIL TOKEN")
             throw new Error("Simli 没有返回有效的通话凭证，请检查账户和形象状态");
           return value;
@@ -58,10 +62,12 @@ export class SimliService {
     } finally { control.abort(); }
   }
   job() {
+    if (this.store.closed) return null;
     const row = this.store.db.prepare("SELECT value FROM settings WHERE id='avatar-generation'").get();
     return row ? this.store.unseal(row.value) : null;
   }
   saveJob(job) {
+    if (this.store.closed) throw new Error("服务已关闭");
     this.store.db.prepare("INSERT OR REPLACE INTO settings VALUES ('avatar-generation',?)").run(this.store.seal(job));
     return job;
   }
@@ -83,12 +89,12 @@ export class SimliService {
       // This endpoint performs the official preprocessing when target-ratio is omitted.
       // One request avoids uploading/storing a second copy of the person's photo.
       this.saveJob({ status: "unknown", name: name.trim(), faceId: "", startedAt: new Date().toISOString() });
-      const result = await (await this.request(`/faces/trinity?${new URLSearchParams({ gsVersion: "GSA_1.0", face_name: name.trim() })}`,
-        { method: "POST", body: form, timeout: 180000 })).json();
+      const result = await this.readJson(await this.request(`/faces/trinity?${new URLSearchParams({ gsVersion: "GSA_1.0", face_name: name.trim() })}`,
+        { method: "POST", body: form, timeout: 180000 }));
       if (!validId(result.face_id)) throw new Error("Simli 未返回形象编号，请刷新进度或检查 Simli 控制台，勿重复上传");
       return this.saveJob({ ...this.job(), faceId: result.face_id, status: "pending" });
     } catch (error) {
-      if (/（(?:401|402|403|404|422|429)）/.test(error.message)) this.saveJob({ ...this.job(), status: "failed" });
+      if (!this.store.closed && /（(?:401|402|403|404|422|429)）/.test(error.message)) this.saveJob({ ...this.job(), status: "failed" });
       throw error;
     } finally { this.creating = false; }
   }
@@ -96,7 +102,7 @@ export class SimliService {
     const job = this.job(); if (!job) return null;
     // A timed-out submission has an unknown outcome. Do not attach an unrelated older job.
     if (!job.faceId) return { ...job, note: "提交结果尚未确认，请到 Simli 控制台核对；已有形象可通过刷新形象列表选用。" };
-    const result = await (await this.request(`/faces/trinity/generation_status?face_id=${encodeURIComponent(job.faceId)}`)).json();
+    const result = await this.readJson(await this.request(`/faces/trinity/generation_status?face_id=${encodeURIComponent(job.faceId)}`));
     const row = result.generations?.find(g => g.face_id === job.faceId) || (result.face_id === job.faceId ? result : null);
     if (!row || !["pending", "processing", "completed", "failed", "not_found"].includes(row.status)) return job;
     if (row.status === "not_found" && (await this.faces()).some(f => f.id === job.faceId)) row.status = "completed";

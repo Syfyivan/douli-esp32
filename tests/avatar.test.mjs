@@ -94,6 +94,8 @@ test("provider errors cannot echo credentials; uncertain creation cannot be blin
   const store = fixture(t);
   const service = new SimliService(store, { fetch: async () => new Response("fixture-secret provider debug", { status: 403 }) });
   await assert.rejects(service.faces(), error => /额度不足/.test(error.message) && !error.message.includes("fixture-secret"));
+  service.fetch = async () => new Response("<html>fixture-secret bad gateway</html>", { status: 200 });
+  await assert.rejects(service.faces(), error => /无法解析/.test(error.message) && !error.message.includes("fixture-secret"));
   service.fetch = async () => { throw new Error("fixture-secret network debug"); };
   const image = "data:image/png;base64," + Buffer.from([137,80,78,71,13,10,26,10,0]).toString("base64");
   await assert.rejects(service.create({ image, name: "照片" }), /网络不可用/);

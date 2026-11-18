@@ -6,5 +6,8 @@ const app = await createApplication({ dataDir: process.env.DOULI_DATA_DIR, gatew
 await app.admin.listen({ port: Number(process.env.DOULI_PORT || 8788), host: "127.0.0.1" });
 await app.device.listen({ port: Number(process.env.DOULI_DEVICE_PORT || 8789), host: "0.0.0.0" });
 console.log("Douli Android ready", process.version, resolve("."));
+let closing = null;
 for (const name of ["SIGTERM", "SIGINT"])
-  process.once(name, async () => { await app.close(); process.exit(0); });
+  process.once(name, () => {
+    closing ||= app.close().catch(() => {}).finally(() => process.exit(0));
+  });
