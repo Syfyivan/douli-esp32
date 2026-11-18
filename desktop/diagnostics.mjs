@@ -34,7 +34,8 @@ export async function diagnose({ app, window, service, status, connect, showWind
       check("no owned child left", !service.child);
     } else {
       check("expected service ownership", status().mode === mode);
-      await until("document.querySelectorAll('.sidebar nav button').length === 4");
+      const clickNav = label => evaluate(`Array.from(document.querySelectorAll('.sidebar nav button')).find(b => b.textContent === ${JSON.stringify(label)}).click()`);
+      await until("document.querySelectorAll('.sidebar nav button').length === 5");
       check("renderer isolated", await evaluate("typeof require === 'undefined' && typeof process === 'undefined' && !!window.douliDesktop"));
       check("preload bridge restricted", await evaluate("Object.keys(window.douliDesktop).sort().join(',') === 'getStatus,onBackground,openLogs,retry'"));
       const prefs = window.webContents.getLastWebPreferences();
@@ -44,42 +45,42 @@ export async function diagnose({ app, window, service, status, connect, showWind
         const { diagnoseUi } = await import("./ui-diagnostics.mjs");
         await diagnoseUi({ window, profile, check, evaluate, until });
       }
-      for (const label of ["我的助手", "我的资料", "设置", "对话记录"]) {
-        await evaluate(`Array.from(document.querySelectorAll('.sidebar nav button')).find(b => b.textContent === ${JSON.stringify(label)}).click()`);
+      for (const label of ["视频通话", "我的助手", "我的资料", "设置", "对话记录"]) {
+        await clickNav(label);
         await until(`document.querySelector('main header').textContent.includes(${JSON.stringify(label)})`);
         await delay(180);
         check("page: " + label, await evaluate("!document.querySelector('.loading')"));
       }
-      await evaluate("document.querySelectorAll('.sidebar nav button')[2].click()");
+      await clickNav("我的资料");
       await until("document.querySelectorAll('.profile-tabs button').length === 3");
-      check("profile groups memory experiences and health", await evaluate("Array.from(document.querySelectorAll('.profile-tabs button')).map(b=>b.textContent).join(',') === '偏好与记忆,近期经历,健康资料'"));
+      check("profile groups memory experiences and health", await evaluate("Array.from(document.querySelectorAll('.profile-tabs button')).map(b=>b.textContent).join(',') === '偏好与记忆,生活记录,健康资料'"));
       await evaluate("document.querySelectorAll('.profile-tabs button')[2].click()");
       await until("!!document.querySelector('.health-collection')");
       check("health opens as a document collection", await evaluate("!document.body.textContent.includes('说说你想了解的问题') && !document.querySelector('.health-page textarea')"));
-      await evaluate("document.querySelectorAll('.sidebar nav button')[3].click()");
+      await clickNav("设置");
       await until("!!document.querySelector('.settings-nav')");
       await evaluate("Array.from(document.querySelectorAll('.settings-nav button')).find(b=>b.textContent==='功能显示').click()");
       await until("!!document.querySelector('.module-layout input[type=checkbox]')");
       await evaluate("document.querySelector('.module-layout input[type=checkbox]').click()");
-      await until("document.querySelectorAll('.sidebar nav button').length === 5");
+      await until("document.querySelectorAll('.sidebar nav button').length === 6");
       check("devices are explicitly enabled", await evaluate("JSON.parse(localStorage.getItem('douli.desktop.ui.v1')).showDevices === true"));
       await window.reload();
-      await until("document.querySelectorAll('.sidebar nav button').length === 5");
+      await until("document.querySelectorAll('.sidebar nav button').length === 6");
       check("module visibility survives reload", true);
-      await evaluate("document.querySelectorAll('.sidebar nav button')[3].click()");
+      await clickNav("设备与家居");
       await until("document.querySelector('main header').textContent.includes('设备与家居')");
       check("optional devices page remains accessible", true);
-      await evaluate("document.querySelectorAll('.sidebar nav button')[4].click()");
+      await clickNav("设置");
       await until("!!document.querySelector('.settings-nav')");
       await evaluate("Array.from(document.querySelectorAll('.settings-nav button')).find(b=>b.textContent==='功能显示').click()");
       await until("!!document.querySelector('.module-layout input[type=checkbox]')");
       await evaluate("document.querySelector('.module-layout input[type=checkbox]').click()");
-      await until("document.querySelectorAll('.sidebar nav button').length === 4");
+      await until("document.querySelectorAll('.sidebar nav button').length === 5");
       check("hiding devices preserves service", (await fetch(service.origin + "/api/health").then(r => r.json())).ok);
       // Real SQLite, encryption, HTTP and UI rendering; cloud output is not tested.
       await evaluate(`fetch('/api/preferences', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:'desktop-acceptance',name:'桌面验收',value:'持久化检查'})}).then(r=>{if(!r.ok)throw Error('write failed')})`);
       await window.reload();
-      await until("document.querySelectorAll('.sidebar nav button').length === 4");
+      await until("document.querySelectorAll('.sidebar nav button').length === 5");
       check("SQLite data survives reload", await evaluate("fetch('/api/state').then(r=>r.json()).then(s=>s.preferences.some(p=>p.id==='desktop-acceptance'))"));
       check("camera denied", await evaluate("navigator.mediaDevices.getUserMedia({video:true}).then(s=>{s.getTracks().forEach(t=>t.stop());return false},e=>e.name==='NotAllowedError')"));
       // Exercise a real Chromium media stream with its synthetic audio source.
@@ -91,7 +92,7 @@ export async function diagnose({ app, window, service, status, connect, showWind
       await evaluate(`fetch('/api/settings', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({privacy:{autoMemory:false},models:Object.fromEntries(['daily','asr','tts'].map(k=>[k,{baseUrl:location.origin+'/acceptance-only',model:'acceptance'}]))})})`);
       const loaded = new Promise(resolve => window.webContents.once("did-finish-load", resolve));
       window.reload(); await loaded;
-      await until("document.querySelectorAll('.sidebar nav button').length === 4");
+      await until("document.querySelectorAll('.sidebar nav button').length === 5");
       await evaluate(`window.acceptanceTracks=[];const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.getUserMedia=async c=>{const s=await original(c);window.acceptanceTracks.push(...s.getTracks());return s;};Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='电脑语音').click()`);
       await until("document.body.textContent.includes('正在听你说')");
       check("voice WebSocket and AudioWorklet active", await evaluate("window.acceptanceTracks.some(t=>t.readyState==='live')"));
@@ -116,7 +117,7 @@ export async function diagnose({ app, window, service, status, connect, showWind
         for (let i = 0; i < 50 && !status().error; i++) await delay(100);
         check("service crash shown", !!status().error);
         await connect();
-        await until("document.querySelectorAll('.sidebar nav button').length === 4");
+        await until("document.querySelectorAll('.sidebar nav button').length === 5");
         check("service restarts", status().mode === "owned" && !status().error);
         check("data survives service restart", await evaluate("fetch('/api/state').then(r=>r.json()).then(s=>s.preferences.some(p=>p.id==='desktop-acceptance'))"));
       }
@@ -138,7 +139,7 @@ export async function diagnose({ app, window, service, status, connect, showWind
         await control("/start");
         // Exercise the real timer, without clicking retry or invoking connect.
         for (let i = 0; i < 150 && status().error; i++) await delay(100);
-        await until("document.querySelectorAll('.sidebar nav button').length === 4");
+        await until("document.querySelectorAll('.sidebar nav button').length === 5");
         check("external restart automatically restores UI", status().mode === "attached" && !service.child && !status().error);
         check("external data survives automatic recovery", await evaluate("fetch('/api/state').then(r=>r.json()).then(s=>s.preferences.some(p=>p.id==='desktop-acceptance'))"));
       }

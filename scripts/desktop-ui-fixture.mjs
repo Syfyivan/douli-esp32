@@ -26,6 +26,10 @@ export function seedDesktopUi(profile) {
       store.db.prepare("INSERT INTO memory_summaries VALUES (?,?,?,?,?,?,?)").run(id, kind, session.id, dayValue, "完成了一件惦记了很久的事，想给自己留一个轻松的晚上。", "acceptance-only", now);
       store.db.prepare("INSERT INTO summary_sources VALUES (?,?)").run(id, message.id);
     }
+    store.db.prepare(`INSERT INTO memory_episodes
+      (id,session_id,source_id,text,kind,occurred_at,ended_at,recorded_at,updated_at,topics,origin)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run("ui-episode", session.id, message.id, "完成了一件惦记了很久的事，想给自己留一个轻松的晚上。", "event", now, null, now, now, JSON.stringify(["life"]), "automatic");
+    store.db.prepare("INSERT INTO episode_sources VALUES (?,?,?)").run("ui-episode", message.id, "今天终于把拖了很久的事情做完了。");
     putMemory(store, { name: "关于吃饭的小偏好", value: "不喜欢香菜，点餐时记得帮我留意。", kind: "preference", status: "active" });
     putMemory(store, { name: "我喜欢的交流方式", value: "先听我把话说完，不需要马上给建议。", kind: "preference", status: "active", pinned: true });
     putMemory(store, { name: "一个已完成的小目标", value: "完成了拖了很久的事情。", kind: "event", status: "suggested", sourceId: message.id, quote: "今天终于把拖了很久的事情做完了。" });

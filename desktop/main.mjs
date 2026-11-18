@@ -21,7 +21,11 @@ if (existsSync(logFile) && statSync(logFile).size > 2 * 1024 * 1024)
 const log = message => appendFileSync(logFile, new Date().toISOString() + " " + message + "\n");
 let preferences = {};
 try { preferences = JSON.parse(readFileSync(settingsPath, "utf8")); } catch { /* First launch. */ }
-function savePreferences() { writeFileSync(settingsPath, JSON.stringify(preferences, null, 2)); }
+function savePreferences() {
+  const temp = settingsPath + ".tmp";
+  writeFileSync(temp, JSON.stringify(preferences, null, 2));
+  renameSync(temp, settingsPath);
+}
 const statusFile = join(root, "desktop/status.html");
 const statusUrl = pathToFileURL(statusFile).href;
 let window, tray, service, quitting = false, closing = false, connecting = false, errorMessage = "", monitor;
@@ -36,15 +40,19 @@ else {
   app.on("before-quit", event => {
     quitting = true;
     if (closing) return;
+    monitor?.stop();
+    if (!service) {
+      closing = true;
+      tray?.destroy();
+      return;
+    }
     event.preventDefault();
     closing = true;
-    monitor?.stop();
-    window?.webContents.send("douli:background");
-    void service?.stop().finally(() => {
+    if (window && !window.isDestroyed()) window.webContents.send("douli:background");
+    void service.stop().finally(() => {
       tray?.destroy();
       app.quit();
     });
-    if (!service) app.quit();
   });
   app.on("web-contents-created", (_event, contents) => {
     contents.on("will-attach-webview", event => event.preventDefault());
@@ -74,7 +82,7 @@ async function showFailure(error) {
   errorMessage = error.message;
   monitor?.reset({ offline: true });
   log(describeConnectionError(error));
-  await window.loadFile(statusFile);
+  if (window && !window.isDestroyed()) await window.loadFile(statusFile).catch(() => {});
   updateMenus();
 }
 async function connect() {
@@ -85,7 +93,7 @@ async function connect() {
   try {
     await service.start();
     if (quitting) { await service.stop(); return; }
-    await window.loadURL(origin);
+    if (window && !window.isDestroyed()) await window.loadURL(origin);
     updateMenus();
     return true;
   } catch (error) { await showFailure(error); }
@@ -145,7 +153,11 @@ function updateMenus() {
     { label: "编辑", submenu: [ { role: "undo", label: "撤销" }, { role: "redo", label: "重做" },
       { type: "separator" }, { role: "cut", label: "剪切" }, { role: "copy", label: "复制" },
       { role: "paste", label: "粘贴" }, { role: "selectAll", label: "全选" } ] },
-    { label: "视图", submenu: [ { label: "刷新", accelerator: "CmdOrCtrl+R", click: () => window.reload() },
+    { label: "视图", submenu: [ { label: "刷新", accelerator: "CmdOrCtrl+R", click: () => {
+      if (!window || window.isDestroyed()) return;
+      if (window.webContents.getURL() === statusUrl) void connect();
+      else window.reload();
+    } },
       { role: "resetZoom", label: "实际大小" }, { role: "zoomIn", label: "放大" }, { role: "zoomOut", label: "缩小" },
       { role: "togglefullscreen", label: "全屏" },
       ...(!app.isPackaged ? [{ role: "toggleDevTools", label: "开发者工具" }] : []) ] },

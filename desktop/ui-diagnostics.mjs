@@ -38,9 +38,9 @@ export async function diagnoseUi({ window, profile, check, evaluate, until }) {
   await click("保存记忆");
   await until("!document.querySelector('.memory-editor') && document.querySelector('.saved-memory-list').textContent.includes('界面保存检查')");
   check("manual memory persists", true);
-  await click("近期经历", ".profile-tabs button");
+  await click("生活记录", ".profile-tabs button");
   await until("!!document.querySelector('.experience-entry')");
-  await click("查看原话与来源");
+  await click("查看原话", ".experience-entry button");
   await until("!!document.querySelector('.experience-entry blockquote')");
   await capture("04-experiences");
   await click("打开原对话");
