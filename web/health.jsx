@@ -9,7 +9,7 @@ const blankFact = { kind: "condition", name: "", detail: "", generic: "", ingred
 const showDate = value => value ? new Date(value).toLocaleString("zh-CN") : "未标明";
 async function base64(file) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader(); reader.onerror = reject;
+    const reader = new FileReader(); reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
     reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.readAsDataURL(file);
   });
 }

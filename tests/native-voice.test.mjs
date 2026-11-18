@@ -20,4 +20,11 @@ test("Android permission handoff keeps a pending client until the service starts
   denied.receive({ type: "error", nativeStartFailed: true, message: "permission denied" });
   assert.equal(denied.closed, true); assert.equal(listeners.size, 0);
   assert.equal(commands.length, 2);
+
+  globalThis.window.douliNativeVoice.send = () => ({ error: "请先回到豆梨页面" });
+  const failedStart = new NativeVoice({ onStatus: value => statuses.push(value) });
+  await assert.rejects(failedStart.start("test", "auto"), /回到豆梨页面/);
+  assert.equal(failedStart.closed, true);
+  assert.equal(listeners.size, 0);
+  assert.equal(statuses.at(-1), "off");
 });

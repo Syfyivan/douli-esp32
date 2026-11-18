@@ -39,7 +39,7 @@ export function AvatarSettings({ settings, api, act, notify, onSaved, Section, F
       const bitmap = await createImageBitmap(file);
       const valid = bitmap.width >= 512 && bitmap.height >= 512; bitmap.close();
       if (!valid) throw new Error("照片宽和高都需要至少 512 像素");
-      const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+      const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error || new Error("读取图片失败")); reader.readAsDataURL(file); });
       setPicture(data);
     });
   };

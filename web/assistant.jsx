@@ -4,16 +4,19 @@ import { SpeakerVolume } from "./speaker-volume.jsx";
 import { ComputerTasksPanel } from "./computer.jsx";
 
 export function AssistantPage({ state, act, notify, api, Section, Field, Button, Toggle, saveNight, nightSave }) {
-  const [patch, setPatch] = useState({});
+  const [patch, setPatch] = useState({}), [wakeText, setWakeText] = useState(null);
   const a = { ...state.settings.assistant, ...patch, night: { ...state.settings.assistant.night, ...nightSave.patch } };
   const [saving, setSaving] = useState(false);
   const set = (key, value) => setPatch(old => ({ ...old, [key]: value }));
   const night = (key, value) => { if (value !== "") void saveNight(key, value); };
-  const save = () => act(async () => {
+  const save = async () => {
+    if (saving) return;
     setSaving(true);
-    try { await api("/settings", "PUT", { assistant: patch }); setPatch({}); notify("助手偏好已保存，下一轮对话生效"); }
-    finally { setSaving(false); }
-  });
+    try {
+      const ok = await act(async () => { await api("/settings", "PUT", { assistant: patch }); return true; });
+      if (ok) { setPatch({}); setWakeText(null); notify("助手偏好已保存，下一轮对话生效"); }
+    } finally { setSaving(false); }
+  };
   return <>
     <div className="page-title title-with-action"><div><span className="eyebrow">A LITTLE MORE LIKE YOU</span><h1>你喜欢的陪伴方式</h1><p>从一句问候，到每一次回应，慢慢找到合拍的方式。</p></div><Button primary icon={Check} disabled={saving} onClick={save}>{saving ? "保存中…" : "保存偏好"}</Button></div>
     <div className="assistant-layout">
@@ -27,7 +30,7 @@ export function AssistantPage({ state, act, notify, api, Section, Field, Button,
         </Section>
         <Section title="听到你时，怎样回应" subtitle="实际唤醒词由音箱固件决定；这里设置收到唤醒事件后的回应。">
           <Field label="回应你的第一句话"><input value={a.greeting} onChange={e => set("greeting", e.target.value)} /></Field>
-          <details><summary><Radio size={15} /> 设备唤醒词</summary><Field label="设备会发送的唤醒词（逗号分隔）"><input value={a.wakeWords.join("，")} onChange={e => set("wakeWords", e.target.value.split(/[,，]/).map(x => x.trim()))} /></Field></details>
+          <details><summary><Radio size={15} /> 设备唤醒词</summary><Field label="设备会发送的唤醒词（逗号分隔）"><input value={wakeText ?? a.wakeWords.join("，")} onChange={e => { setWakeText(e.target.value); set("wakeWords", e.target.value.split(/[,，]/).map(x => x.trim()).filter(Boolean)); }} /></Field></details>
         </Section>
       </div>
       <aside>

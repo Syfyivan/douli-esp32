@@ -12,10 +12,15 @@ export class NativeVoice {
     if (result.error) throw new Error(result.error);
     return result;
   }
-  async start(sessionId, route) { this.starting = true; this.bridge({ action: "start", sessionId, route }); }
+  async start(sessionId, route) {
+    if (this.closed) return;
+    this.starting = true;
+    try { this.bridge({ action: "start", sessionId, route }); }
+    catch (error) { this.starting = false; this.detach(); this.onStatus?.("off"); throw error; }
+  }
   restore() { this.receive(this.bridge({ action: "snapshot" })); }
   receive(event) {
-    if (this.closed) return;
+    if (this.closed || !event) return;
     if (event.type === "native_snapshot") {
       // Returning from Android's permission sheet can publish the pre-service
       // snapshot before the foreground service starts. Keep the pending client.
@@ -43,6 +48,6 @@ export class NativeVoice {
   detach() { this.closed = true; window.removeEventListener("douli-native-voice", this.listener); }
   stop() {
     if (this.closed) return;
-    this.send({ type: "end" }); this.detach(); this.onStatus?.("off");
+    try { this.send({ type: "end" }); } finally { this.detach(); this.onStatus?.("off"); }
   }
 }

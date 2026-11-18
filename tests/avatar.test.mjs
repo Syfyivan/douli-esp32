@@ -277,4 +277,15 @@ test("ending a call during SDP setup cannot create a new ICE wait after cleanup"
   await assert.rejects(starting, /通话已取消/);
   assert.equal(transport.pc.closed, true);
   assert.equal(transport.iceTimer, undefined);
+  await assert.rejects(transport.unlockAudio(), /已结束/);
+
+  let playedAudio = 0;
+  const partial = new SimliTransport({
+    video: { srcObject: null, play: () => assert.fail("empty video must not play") },
+    audio: { srcObject: {}, play: async () => { playedAudio++; } },
+  });
+  partial.audioBlocked = true;
+  await partial.unlockAudio();
+  assert.equal(playedAudio, 1);
+  assert.equal(partial.audioBlocked, false);
 });

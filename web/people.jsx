@@ -12,8 +12,10 @@ export function PeoplePanel({ state, api, act, notify, Section, Button }) {
   const stop = () => {
     const current = capture.current; if (!current) return;
     capture.current = null; clearInterval(current.timer);
+    if (current.worklet) current.worklet.port.onmessage = null;
     current.stream?.getTracks().forEach(track => track.stop());
-    current.source?.disconnect(); current.worklet?.disconnect(); void current.context?.close();
+    current.source?.disconnect(); current.worklet?.disconnect(); current.gain?.disconnect();
+    current.context?.close().catch(() => {});
     if (mounted.current) {
       setRecording(false);
       const size = current.frames.reduce((n, frame) => n + frame.byteLength, 0);
@@ -38,7 +40,7 @@ export function PeoplePanel({ state, api, act, notify, Section, Button }) {
       if (capture.current !== current) return;
       current.source = current.context.createMediaStreamSource(stream);
       current.worklet = new AudioWorkletNode(current.context, "douli-capture");
-      const gain = current.context.createGain(); gain.gain.value = 0;
+      const gain = current.context.createGain(); gain.gain.value = 0; current.gain = gain;
       current.source.connect(current.worklet); current.worklet.connect(gain); gain.connect(current.context.destination);
       current.worklet.port.onmessage = ({ data }) => {
         if (capture.current !== current) return;
@@ -46,9 +48,10 @@ export function PeoplePanel({ state, api, act, notify, Section, Button }) {
         if (current.frames.length >= 1500) stop();
       };
       current.timer = setInterval(() => setSeconds(Math.floor(current.frames.length / 50)), 250);
-    } catch (error) { if (capture.current === current) stop(); notify(error.message, true); }
+    } catch (error) { if (capture.current === current) stop(); if (mounted.current) notify(error.message, true); }
   };
   const submit = async () => {
+    if (busy || !sample || !target || !consent) return;
     setBusy(true);
     try {
       let binary = "";
@@ -61,8 +64,15 @@ export function PeoplePanel({ state, api, act, notify, Section, Button }) {
   return <>
     <Section title="两个人，各自的资料" subtitle="偏好、记忆、对话和健康资料分别保存。旧数据留在“原有档案”，不会自动分给任何人。">
       {state.people.people.map(person => <div className="data-row" key={person.id}>
-        <input aria-label={`${person.name}的称呼`} defaultValue={person.name} maxLength={40}
-          onBlur={event => { if (event.target.value !== person.name) act(() => api(`/people/${person.id}`, "PUT", { name: event.target.value })); }} />
+        <input key={`${person.id}:${person.name}`} aria-label={`${person.name}的称呼`} defaultValue={person.name} maxLength={40}
+          onBlur={event => {
+            const next = event.target.value.trim();
+            if (!next) { event.target.value = person.name; return; }
+            if (next !== person.name) act(async () => {
+              try { await api(`/people/${person.id}`, "PUT", { name: next }); }
+              catch (e) { event.target.value = person.name; throw e; }
+            });
+          }} />
         <span>{person.enrolled ? "已录入声音" : "尚未录入"}</span>
         {person.enrolled && <Button disabled={busy || recording} onClick={() => act(() => api(`/people/${person.id}/voiceprint`, "DELETE"))}>停用声纹</Button>}
       </div>)}

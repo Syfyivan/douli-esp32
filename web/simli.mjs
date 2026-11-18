@@ -185,7 +185,12 @@ export class SimliTransport {
     this.onSpeaking?.(false);
   }
   async unlockAudio() {
-    await Promise.all([this.video.play(), this.audio.play(), this.outputContext?.resume()]);
+    if (this.closed) throw new Error("通话已结束");
+    await Promise.all([
+      this.video?.srcObject ? this.video.play() : null,
+      this.audio?.srcObject ? this.audio.play() : null,
+      this.outputContext?.resume(),
+    ]);
     this.audioBlocked = false;
   }
   fail(message) {
