@@ -31,8 +31,10 @@ export function explicitComputerAction(text = "", action) {
 }
 
 export class ComputerTasks {
-  constructor(store, { client, pollMs = 2500 } = {}) {
+  constructor(store, { client, pollMs = 2500, configuration } = {}) {
     this.store = store; this.pollMs = pollMs; this.locks = new Map(); this.lastChecked = new Map(); this.closed = false;
+    this.configuration = configuration;
+    this.services = configuration?.services || new Set(); this.services.add(this);
     // Deliberately outside the sync table allowlist: executable paths, handles
     // and permission to control this computer must never migrate to a phone.
     store.db.exec(`CREATE TABLE IF NOT EXISTS computer_config (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
@@ -42,16 +44,18 @@ export class ComputerTasks {
     this.client = client || new OrcaClient(() => this.config());
   }
   config() {
+    if (this.configuration) return this.configuration.config();
     const row = this.store.db.prepare("SELECT payload FROM computer_config WHERE id=1").get();
     return { ...defaults, ...(row ? this.store.unseal(row.payload) : {}) };
   }
   async configure(patch) {
+    if (this.configuration) return this.configuration.configure(patch);
     if (!patch || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).some(k => !Object.hasOwn(defaults, k))) throw new Error("无效的电脑控制设置");
     const config = { ...this.config(), ...patch };
     if (typeof config.enabled !== "boolean" || typeof config.cliPath !== "string" || config.cliPath.length > 2000 ||
       typeof config.defaultWorktree !== "string" || config.defaultWorktree.length > 1000 || /[\r\n\0]/.test(config.cliPath)) throw new Error("无效的电脑控制设置");
     if (config.enabled && process.env.DOULI_MOBILE === "1") throw new Error("请在电脑后台开启 Orca 控制");
-    if (config.cliPath !== this.config().cliPath && this.pending().some(t => activeStates.has(t.state) || (t.state === "uncertain" && t.terminal))) throw new Error("有任务进行中，请先停止任务再更换 Orca 路径");
+    if (config.cliPath !== this.config().cliPath && [...this.services].some(service => service.pending().some(t => activeStates.has(t.state) || (t.state === "uncertain" && t.terminal)))) throw new Error("有任务进行中，请先停止任务再更换 Orca 路径");
     this.store.db.prepare("INSERT OR REPLACE INTO computer_config VALUES (1,?)").run(this.store.seal(config));
     return config;
   }
@@ -234,7 +238,7 @@ export class ComputerTasks {
     if (this.closed) return;
     for (const task of this.pending()) if ((activeStates.has(task.state) || (task.state === "uncertain" && task.terminal)) && !this.locks.has(task.id)) this.wake(task.id);
   }
-  async close() { this.closed = true; clearInterval(this.timer); await Promise.allSettled([...this.locks.values()]); }
+  async close() { this.closed = true; clearInterval(this.timer); await Promise.allSettled([...this.locks.values()]); this.services.delete(this); }
   prompt(task) {
     return `${task.origin === "existing_session" ? "继续当前会话，沿用本会话已有上下文。" : ""}豆梨转交的用户任务，编号 ${task.id}，第 ${task.turns.length} 轮。请执行下面的用户请求；遇到需要用户决定或权限确认的情况明确说明，并保留在 Orca 中等待。完成后用中文说明结果和实际验证范围。\n用户请求：\n${task.turns.at(-1).instruction}`;
   }

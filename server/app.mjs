@@ -63,7 +63,7 @@ export async function createApplication({
   const sync = new SyncService(store, { addresses: () => localAddresses(store.directory), port: gatewayPort,
     onChange: () => { gateway.refreshSettings(); memory.schedule(); } });
   const backends = new BackendSelectionService(store, gateway, sync, { remoteConfig });
-  const people = new People({ store, memory, engine, health, home }, { remoteConfig });
+  const people = new People({ store, memory, engine, health, home, computer, gateway }, { remoteConfig });
   gateway.people = people;
   people.onCreated = () => {
     // A pre-existing realtime socket may hold the original user's context.
@@ -95,7 +95,7 @@ export async function createApplication({
     reply.header("X-Content-Type-Options", "nosniff");
   });
   admin.addHook("onRequest", (req, _reply, done) => {
-    if (!/^\/api\/(?:state|chat|sessions|messages|preferences|memories|memory|medical|dictionary)(?:[/?]|$)/.test(req.url)) return done();
+    if (!/^\/api\/(?:state|chat|sessions|messages|preferences|memories|memory|medical|dictionary|computer)(?:[/?]|$)/.test(req.url)) return done();
     try {
       const id = req.headers["x-douli-person"] || new URL(req.url, "http://localhost").searchParams.get("person") || "";
       people.scope.run(people.bundle(id), done);
@@ -118,7 +118,7 @@ export async function createApplication({
   registerHealthRoutes(admin, health);
   registerPeopleRoutes(admin, people);
   registerAvatarRoutes(admin, store, avatarOptions);
-  registerComputerRoutes(admin, computer);
+  registerComputerRoutes(admin, people.proxy("computer"));
   registerSyncRoutes(admin, device, sync);
   admin.get("/api/devices/:id/backend", async req => backends.status(req.params.id));
   admin.post("/api/devices/:id/backend", async req => backends.switch(req.params.id, req.body?.mode));
@@ -595,6 +595,7 @@ export async function createApplication({
   memory.start();
   sync.start();
   computer.start();
+  people.start();
   return {
     admin,
     device,

@@ -4,6 +4,12 @@ const polite = text => text
   .replace(/^(?:(?:嗯+|呃+|哦|噢|好(?:的|了|吧|啦)?|行(?:了|吧)?|那(?:就)?|谢谢(?:你)?))+/u, "")
   .replace(/(?:谢谢(?:你)?)+$/u, "");
 
+export function isWakeGreeting(text, wakeWords = []) {
+  if (typeof text !== "string") return false;
+  const phrase = normalize(text);
+  return !!phrase && wakeWords.some(word => typeof word === "string" && normalize(word) === phrase);
+}
+
 export function isFarewell(text, assistantName = "豆梨") {
   if (typeof text !== "string") return false;
   // Only complete commands qualify. Keep quotes, negations and extra clauses

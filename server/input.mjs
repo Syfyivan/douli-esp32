@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { complete } from "./providers.mjs";
+import { correctComputerTranscript } from "./computer-language.mjs";
 
 export function correctAssistantAddress(text, settings) {
   if (!settings.input.correctAssistantName) return text;
@@ -67,10 +68,11 @@ export function validateRefinement(raw, proposed, mode) {
   }
   return true;
 }
-export async function processInput(store, raw, context = "", signal, { voice = false } = {}) {
+export async function processInput(store, raw, context = "", signal, { voice = false, computerEnabled = false } = {}) {
   const settings = store.settings();
   const addressed = voice ? correctAssistantAddress(raw.trim(), settings) : raw.trim();
-  const corrected = applyDictionary(addressed, store.all("dictionary"), { voice });
+  const terms = voice && computerEnabled ? correctComputerTranscript(addressed) : addressed;
+  const corrected = applyDictionary(terms, store.all("dictionary"), { voice });
   if (!settings.input.refine)
     return {
       raw,

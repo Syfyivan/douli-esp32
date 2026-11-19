@@ -1,0 +1,4 @@
+[
+  { "command": "ni hao dou li", "text": "你好豆梨", "action": "wake" },
+  { "command": "dou li ni hao", "text": "豆梨你好", "action": "wake" }
+]

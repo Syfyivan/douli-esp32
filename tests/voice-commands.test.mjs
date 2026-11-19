@@ -7,7 +7,14 @@ import { join, resolve, sep } from "node:path";
 import { WebSocket } from "ws";
 import { Store } from "../server/store.mjs";
 import { VoiceConnection } from "../server/gateway.mjs";
-import { isFarewell } from "../server/voice-commands.mjs";
+import { isFarewell, isWakeGreeting } from "../server/voice-commands.mjs";
+
+test("only whole configured wake phrases are greetings, excluding questions, quotations and following requests", () => {
+  const words = ["你好豆梨", "豆梨你好"];
+  for (const text of ["你好，豆梨。", "豆梨，你好！"]) assert.equal(isWakeGreeting(text, words), true);
+  for (const text of ["你好豆梨，帮我调音量", "‘你好豆梨’", "你会说你好豆梨吗", "别说你好豆梨", "你好豆粒", "", null]) assert.equal(isWakeGreeting(text, words), false);
+  assert.equal(isWakeGreeting("你好豆梨", ["豆梨你好"]), false);
+});
 import { ChatEngine } from "../server/engine.mjs";
 import { transcribe } from "../server/providers.mjs";
 import { defaults } from "../server/config.mjs";

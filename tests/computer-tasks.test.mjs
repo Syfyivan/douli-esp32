@@ -319,9 +319,17 @@ test("local API rejects foreign origins, disabled writes, invalid prompts and ar
 
 test("chat dispatch queries existing Orca sessions even when the model uses the old list action", async t => {
   const dir = directory(t), client = new FixtureOrca(); existingSessions(client);
+  const transcripts = [
+    "呃，你看一下这个豆梨ESP三二这个，有现在有这个这个奥卡里面现在有多少个session啊？",
+    "请查看 ESP32项目现在有多少个奥卡绘画？只查询，不修改文件。",
+  ];
+  const expectedInputs = transcripts.map(text => text.replace("奥卡绘画", "奥卡会话"));
+  const modelInputs = [];
   const mock = createServer(async (req, res) => {
     const chunks = []; for await (const c of req) chunks.push(c);
     const body = JSON.parse(Buffer.concat(chunks));
+    const input = body.messages.findLast(message => message.role === "user").content;
+    assert.ok(expectedInputs.includes(input)); modelInputs.push(input);
     const actions = body.tools.find(tool => tool.function.name === "computer_task").function.parameters.properties.action.enum;
     assert.ok(actions.includes("sessions") && actions.includes("session_read") && actions.includes("session_continue"));
     const delta = body.messages.at(-1).role === "tool" ? { content: "ESP32 项目当前有 4 个会话。" } : {
@@ -338,12 +346,88 @@ test("chat dispatch queries existing Orca sessions even when the model uses the 
   app.store.saveSettings(mergeSettings(app.store.settings(), { models: { daily: { baseUrl: `http://127.0.0.1:${mock.address().port}/v1`, model: "fixture" } },
     memory: { semantic: false, maintenance: false, autoSummaries: false } }));
   await app.computer.configure({ enabled: true, defaultWorktree: "fixture-project" });
-  const result = await app.engine.run({ text: "呃，你看一下这个豆梨ESP三二这个，有现在有这个这个奥卡里面现在有多少个session啊？" });
-  assert.equal(result.message.metadata.tools[0].result.scope, "orca_project_sessions");
-  assert.equal(result.message.metadata.tools[0].result.count, 4);
+  const person = app.people.create("我");
+  const bundle = app.people.bundle(person.id);
+  for (const engine of [app.engine, bundle.engine]) {
+    for (const text of transcripts) {
+      const result = await engine.run({ text,
+      outputMode: "voice", speaker: { method: "voiceprint", personId: person.id } });
+      assert.equal(result.message.metadata.tools[0].result.scope, "orca_project_sessions");
+      assert.equal(result.message.metadata.tools[0].result.count, 4);
+      assert.ok(result.message.metadata.computerTask);
+      assert.equal(result.input.text, text.replace("奥卡绘画", "奥卡会话"));
+      assert.equal(result.input.raw_text, text);
+    }
+  }
+  assert.ok(modelInputs.includes(expectedInputs[1]));
   assert.equal(app.computer.list().length, 0); assert.equal(client.creates, 0); assert.equal(client.sends.length, 0);
-  assert.ok(result.message.metadata.computerTask);
+  assert.equal(bundle.computer.list().length, 0);
+  assert.equal(bundle.store.db.prepare("SELECT count(*) AS n FROM memory_jobs").get().n, 0);
   assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM memory_jobs").get().n, 0);
+});
+
+test("personal computer tasks share local configuration, isolate records and resume without resubmission", async t => {
+  const dir = directory(t), client = new FixtureOrca(); existingSessions(client);
+  const options = { dataDir: dir, distDir: join(dir, "absent"), computerOptions: { client, pollMs: 60000 } };
+  let app = await createApplication(options);
+  onClose(t, () => app.close());
+  const request = async (person, path, method = "GET", payload) => app.admin.inject({
+    url: "/api/computer" + path, method, payload, headers: { host: "localhost", "x-douli-person": person },
+  });
+  const a = app.people.create("甲"), b = app.people.create("乙");
+  const configure = await request(a.id, "/config", "PUT", { enabled: true, defaultWorktree: "fixture-project" });
+  assert.equal(configure.statusCode, 200, configure.body);
+  const context = JSON.parse(app.people.voiceContext());
+  assert.ok(context.vocabulary.includes("Orca")); assert.ok(context.vocabulary.includes("ESP32"));
+  assert.ok(context.vocabulary.includes("Orca 会话")); assert.equal(context.computerEnabled, true);
+  assert.deepEqual(context.recent, [], "pre-identification hotwords must not include anyone's conversation");
+  for (const person of [a, b]) {
+    const engine = app.people.bundle(person.id).engine;
+    assert.ok(JSON.parse(engine.context()).vocabulary.includes("Orca 会话"));
+    assert.equal(JSON.parse(engine.context()).computerEnabled, true);
+    assert.ok(engine.voiceTools().some(t => t.function.name === "computer_task"));
+    assert.ok(engine.systemPrompt().includes("已开启 Orca 控制"));
+    const sessions = await request(person.id, "/sessions?project=ESP32");
+    assert.equal(sessions.statusCode, 200); assert.equal(sessions.json().count, 4);
+  }
+  const payload = name => ({ instruction: `${name}-private-task`, requestKey: "same-key-different-person" });
+  const responses = await Promise.all([request(a.id, "/tasks", "POST", payload("A")), request(b.id, "/tasks", "POST", payload("B"))]);
+  responses.forEach(r => assert.equal(r.statusCode, 200, r.body));
+  const [ta, tb] = responses.map(r => r.json()); assert.notEqual(ta.id, tb.id);
+  const retry = await request(a.id, "/tasks", "POST", payload("A")); assert.equal(retry.json().id, ta.id);
+  const ca = app.people.bundle(a.id).computer, cb = app.people.bundle(b.id).computer;
+  await ca.refresh(ta.id); await cb.refresh(tb.id);
+  assert.equal(client.creates, 2); assert.equal(client.sends.length, 2);
+  assert.deepEqual((await request(a.id, "")).json().tasks.map(t => t.id), [ta.id]);
+  assert.deepEqual((await request(b.id, "")).json().tasks.map(t => t.id), [tb.id]);
+  assert.equal((await request("", "")).json().tasks.length, 0);
+  assert.ok(!JSON.stringify(app.people.bundle(b.id).engine.systemPrompt()).includes("A-private-task"));
+  for (const path of [`/tasks/${ta.id}`, `/tasks/${ta.id}/refresh`, `/tasks/${ta.id}/followup`, `/tasks/${ta.id}/stop`, `/tasks/${ta.id}/close`]) {
+    const response = await request(b.id, path, path === `/tasks/${ta.id}` ? "GET" : "POST", path.endsWith("followup") ? { instruction: "continue", requestKey: "cross-person" } : undefined);
+    assert.equal(response.statusCode, 400); assert.ok(!response.body.includes("A-private-task"));
+  }
+  const invalid = await request("../", ""); assert.equal(invalid.statusCode, 404);
+  const pathChange = await request("", "/config", "PUT", { cliPath: "changed-during-personal-task" });
+  assert.equal(pathChange.statusCode, 400); assert.match(pathChange.body, /有任务进行中/);
+  assert.equal(app.store.db.prepare("SELECT count(*) AS n FROM computer_config").get().n, 1);
+  assert.equal(ca.store.db.prepare("SELECT count(*) AS n FROM computer_config").get().n, 0);
+  assert.ok(!Object.keys(app.sync.replica.schema()).some(k => k.startsWith("computer_")));
+  await app.close();
+  app = await createApplication(options);
+  assert.equal(app.people.bundles.size, 2, "personal task polling resumes without opening a profile");
+  const resumed = app.people.bundle(a.id).computer;
+  await resumed.refresh(ta.id);
+  assert.equal(client.creates, 2); assert.equal(client.sends.length, 2);
+  client.finish(resumed.get(ta.id).terminal.handle);
+  await resumed.refresh(ta.id); assert.equal(resumed.get(ta.id).state, "completed");
+  await app.computer.configure({ enabled: false });
+  assert.ok(!JSON.parse(app.people.voiceContext()).vocabulary.includes("Orca"));
+  assert.equal(JSON.parse(app.people.voiceContext()).computerEnabled, false);
+  assert.equal(JSON.parse(app.people.bundle(a.id).engine.context()).computerEnabled, false);
+  assert.equal(resumed.enabled(), false); assert.equal(app.people.bundle(b.id).computer.enabled(), false);
+  assert.equal((await request(a.id, "/sessions")).statusCode, 400);
+  const c = app.people.create("丙");
+  assert.ok(!app.people.bundle(c.id).engine.voiceTools().some(t => t.function.name === "computer_task"));
 });
 
 test("chat tool dispatch persists tasks across conversations and excludes task turns from personal memory", async t => {

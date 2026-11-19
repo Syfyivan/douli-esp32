@@ -10,7 +10,8 @@ import { audibleContext } from "./voice-state.mjs";
 import { describeFrame } from "./vision.mjs";
 import { AssistantControl } from "./assistant-control.mjs";
 import { computerIntent } from "./computer-tasks.mjs";
-import { searchWeb, searchStatus, resolveSearchConfig, forbidsWebSearch } from "./web-search.mjs";
+import { COMPUTER_VOCABULARY } from "./computer-language.mjs";
+import { searchWeb, searchStatus, resolveSearchConfig, forbidsWebSearch, webSearchTool } from "./web-search.mjs";
 export { chooseRoute } from "./routing.mjs";
 export function requestsAction(text) {
   if (
@@ -58,9 +59,10 @@ export class ChatEngine {
       vocabulary: [...new Set([
         assistant.name,
         ...assistant.wakeWords,
-        ...(this.computer?.enabled() ? ["Orca", "Codex", "ESP32", "session", "电脑任务"] : []),
+        ...(this.computer?.enabled() ? COMPUTER_VOCABULARY : []),
         ...this.store.all("dictionary").filter(d => d.status === "active").map(d => d.replacement),
       ].filter(word => typeof word === "string").map(word => word.trim()).filter(Boolean))],
+      computerEnabled: !!this.computer?.enabled(),
       preferences: this.store
         .all("preferences")
         .map((p) => ({ name: p.name, value: p.value })),
@@ -80,6 +82,7 @@ export class ChatEngine {
       ...options,
       settings: options.settings || this.store.settings(),
       tools: options.tools || this.voiceTools(),
+      controlResults: this.assistantControl.recentResults(options.sessionId),
       computer: this.computer ? {
         enabled: this.computer.enabled(),
         tasks: this.computer.list().slice(0, 6).map(t => ({
@@ -106,16 +109,8 @@ export class ChatEngine {
     tools.push(toolSchema("history_search", "查找跨会话的用户原话、日期和来源，支持昨天、上周等时间范围。", {
       query: { type: "string" }, from: { type: "string", description: "可选ISO开始时间" }, to: { type: "string", description: "可选ISO结束时间，不含边界" },
     }, ["query"]));
-    const search = searchStatus(resolveSearchConfig(settings));
-    if (search.available)
-      tools.push(
-        toolSchema(
-          "web_search",
-          "用户要求上网查询、核查最新消息、天气、价格或其他外部事实时调用。使用精简关键词，可结合本轮日期；不发送私人记忆。返回标题、链接、摘要和检索时间；摘要不等于已核实全文。不搜索用户明确要求不要联网的内容。",
-          { query: { type: "string", minLength: 1, maxLength: search.provider === "deepseek" ? 128 : 600 } },
-          ["query"],
-        ),
-      );
+    const searchTool = webSearchTool(resolveSearchConfig(settings));
+    if (searchTool) tools.push(searchTool);
     if (actions.length)
       tools.push(
         toolSchema(
@@ -191,7 +186,7 @@ export class ChatEngine {
         text,
         this.context(session.id, priorMessages, priorExcluded),
         currentSignal,
-        { voice: outputMode === "voice" },
+        { voice: outputMode === "voice", computerEnabled: !!this.computer?.enabled() },
       );
       if (!input.text.trim()) throw new Error("没有识别到有效内容");
       const settings = this.store.settings();
@@ -278,7 +273,8 @@ export class ChatEngine {
       const memories = memoryContext.facts;
       const searchForbidden = forbidsWebSearch(input.text);
       const tools = this.voiceTools().filter(tool => !searchForbidden || tool.function.name !== "web_search");
-      const system = this.systemPrompt({ settings, route: selectedRoute,
+      const system = this.systemPrompt({ settings, route: selectedRoute, sessionId: session.id,
+        speakerVolumeControlAvailable: typeof volumeControl === "function",
         model: useRealtime ? realtime.model : profile.model,
         outputMode, nativeAudio: !!useRealtime, tools, memoryContext, visualEvidence });
       const excluded = this.store.excludedIds(session.id);

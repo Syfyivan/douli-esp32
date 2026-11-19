@@ -16,6 +16,22 @@
 - 支持固定电脑、固定手机与自动选择，切换先进入待机，确认目标后台身份后才提交 NVS 设置；失败恢复原策略。局域网名称失败时可使用配对后台的私人 IPv4 备用地址；保存策略后的开机不依赖电脑 OTA。详见 [BACKEND_SELECTION.md](BACKEND_SELECTION.md)。
 - `/api/state` 的设备 `connection` 提供连接开始时间、待机确认状态及收到的二进制帧数，便于核对实际板端行为。本机 `POST /api/devices/:id/standby` 请求设备待机；返回 `requested: true` 仅表示请求已发送，实际确认需读取 `standbyConfirmed`。
 
+## 2026-10-22 双唤醒词资源
+
+- 板端同时配置「你好豆梨」和「豆梨你好」，对应 `ni hao dou li`、`dou li ni hao`，均为 `wake` 动作。复用现有 MultiNet 多命令支持，应用仍为 `2.5.2.11`；保留 `mn7_cn`、0.2 阈值、3000 ms 时限和修订 8 的唤醒窗口。
+- 命令清单保存在 [wake-words.json](../firmware/wake-words.json)。[资源准备脚本](../scripts/prepare-firmware-wake-assets.py) 从当前设备备份提取的 assets 镜像添加命令，只改 `index.json`，保留模型、字体、图片和其他命令；检查校验和、边界、重复项、冲突及按扇区取整后的分区容量。脚本不刷写、不覆盖输入或已有输出。
+- 更新前已读取完整 16 MB Flash，核对分区表 MD5、设备身份及原应用；备份 SHA-256 为 `c57a67d920ffda6a047c71938739ae4803509bb3255c93ef1c225cf6210aef98`。只写入核对后的 assets 地址 `0x800000`，没有写入应用、NVS、分区表或 OTA 选择。新资源 3,603,999 字节，SHA-256 为 `d22326711c2d67bdcc563932cef8a4b896016ced3322a01e28e1a9dc7dad97ad`；模型和其他资源逐项与当前备份一致，esptool 写后哈希校验通过。
+- 独立串口进程在启动 shell 退出后确认实际版本 `2.5.2.11`、两个命令及原模型参数加载；后台重新确认在线待机，音频上行帧为 0。后台当前设置与新安装默认设置也加入「豆梨你好」。这验证了刷写和配置加载，不代表两个口令的真人识别率已验收。
+- `python -B tests/firmware-wake-assets.py` 的 6 项资源检查通过；相关 Node 回归 62 项通过，包含先后上报两个唤醒事件均播放欢迎音频、复用缓存及恢复待机。独立后台进程确认新默认设置。日志、镜像和当前设备备份仅存于忽略目录。
+
+复现时先备份实际设备并核对分区表，将其中的 assets 分区提取为输入，再运行（容量须使用实际核对值）：
+
+```powershell
+python -B scripts/prepare-firmware-wake-assets.py --input .runtime/firmware-repair/assets-current.bin --output .runtime/firmware-repair/assets-dual-wake.bin --partition-size 0x800000
+```
+
+核对输出后只写入实际 assets 分区。回退时使用此次设备备份中的原 assets；应用构建关闭了资源刷写，不会自动添加这两个命令。
+
 ## 2026-10-17 普通回复卡顿：真机收包断流与局域网优先
 
 - 用户再次反馈普通回复卡顿。当前电脑和板子同处局域网，却因启用远程入口而始终使用公网 WSS。旧日志只能证明后台发送连续，不能证明板端及时收到；新增音频服务诊断在既有队列锁内累计收包、队列溢出、解码、输出耗时，结束时由主循环输出一次摘要，不在音频线程逐包打印。取消/新播放重置统计，旧代次的解码和输出不污染新统计。
@@ -37,7 +53,7 @@
 
 脚本校验上游提交并应用补丁，通过上游 `scripts/build.py` 构建 `waveshare/esp32-s3-audio-board` / `esp32-s3-audio-board`，仅输出应用镜像至忽略目录 `.runtime/firmware-repair/`，不会自动刷板。不要手动修改生成的 sdkconfig 或覆盖已有第三方组件。
 
-该板当前分区：应用 ota_0 位于 `0x20000`，大小 `0x3f0000`；ota_1 位于 `0x410000`；assets 位于 `0x800000`。构建使用 `partitions/v2/16m.csv`，关闭资源刷写，保留板上 MultiNet7 中文资源和「你好豆梨」。对其他设备或更改过分区的板子必须重新读取并核对分区，不能直接套用这些地址。
+该板当前分区：应用 ota_0 位于 `0x20000`，大小 `0x3f0000`；ota_1 位于 `0x410000`；assets 位于 `0x800000`。构建使用 `partitions/v2/16m.csv`，关闭资源刷写，保留板上 MultiNet7 中文资源及已配置的唤醒词（当前为「你好豆梨」「豆梨你好」）。对其他设备或更改过分区的板子必须重新读取并核对分区，不能直接套用这些地址。
 
 刷写前读取完整 16 MB Flash 备份并校验 SHA-256；本地备份放在 `.data/device-backups/`，含私人配置。只写已经核对的应用分区，保留 bootloader、分区表、NVS、OTA 选择和 assets。需要回退时使用本次备份中对应的应用分区，不能用未知整片镜像覆盖。
 

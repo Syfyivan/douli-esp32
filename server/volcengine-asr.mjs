@@ -48,13 +48,40 @@ export function asrCorpus(settings, context) {
     return text ? [{ text }] : [];
   });
   return { context: JSON.stringify({ hotwords, context_type: "dialog_ctx", context_data: [
-    { text: `用户正在与名叫“${name}”的语音助手对话，会用“${name}”称呼助手。` }, ...history,
+    { text: `用户正在与名叫“${name}”的语音助手对话，会用“${name}”称呼助手。` },
+    ...(saved.computerEnabled === true ? [{ text: "Orca 是电脑上的编程助手；查询项目中有多少个 session，指的是会话数量。" }] : []),
+    ...history,
   ] }) };
 }
 // Application rejection policy for SAUC mode 2 similarity scores (not
 // probabilities). Keep an absolute floor AND separation from the runner-up.
 export const VOICEPRINT_MIN_SIMILARITY = 0.5;
 export const VOICEPRINT_MIN_MARGIN = 0.1;
+function metadata(value) {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+export function voiceprintDiagnostic(result, settings, audioBytes, levels) {
+  const utterances = result?.utterances || [];
+  return { audioMs: Math.round(audioBytes / 32), utterances: utterances.length,
+    policy: { minSimilarity: VOICEPRINT_MIN_SIMILARITY, minMargin: VOICEPRINT_MIN_MARGIN, minAudioMs: 1000 },
+    ...(levels ? { audio: levels } : {}),
+    labels: utterances.slice(0, 12).map(u => {
+      const additions = metadata(u.additions);
+      const id = u.speaker_id ?? additions?.speaker_id ?? additions?.speaker;
+      if (id == null) return "missing";
+      if (settings.people?.members?.some(p => p.voiceName === id || p.voiceId === id)) return "registered";
+      return /^\d{1,3}$/.test(String(id)) ? `anonymous:${id}` : "unregistered";
+    }),
+    candidates: utterances.slice(0, 12).map(u => {
+      const matches = metadata(u.attributes)?.voiceprint_matches;
+      return (Array.isArray(matches) ? matches : []).slice(0, 10).map(match => ({
+        personId: settings.people?.members?.find(p => p.voiceId === match?.id && p.voiceName === match?.name)?.personId || null,
+        similarity: typeof match?.similarity === "number" && Number.isFinite(match.similarity) ? match.similarity : null,
+      }));
+    }),
+  };
+}
 export function identifySpeaker(result, settings, audioBytes) {
   const unknown = reason => ({ status: "unknown", method: "voiceprint", reason });
   if (!settings.people?.voiceIdentification) return unknown("not_enrolled");
@@ -115,6 +142,7 @@ export class VolcengineTranscriber {
     if (!profile?.baseUrl || !profile.model || !profile.apiKey) throw new Error("请先配置火山流式识别的地址、资源 ID 和 API Key");
     this.settings = settings; this.onPartial = onPartial; this.pending = [];
     this.pendingBytes = 0; this.totalBytes = 0; this.text = "";
+    this.audioSamples = 0; this.audioPower = 0; this.audioPeak = 0; this.audioClipped = 0;
     this.speaker = { status: "unknown", method: "voiceprint" };
     this.result = new Promise((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
     this.result.catch(() => {});
@@ -143,23 +171,10 @@ export class VolcengineTranscriber {
           this.speaker = identifySpeaker(event.value.result, settings, this.totalBytes);
           // Bounded, text-free diagnostics distinguish anonymous clustering
           // from a registered match without retaining audio or voice IDs.
-          const utterances = event.value.result?.utterances || [];
-          this.speaker.diagnostic = { audioMs: Math.round(this.totalBytes / 32),
-            utterances: utterances.length, labels: utterances.slice(0, 12).map(u => {
-              let additions = u.additions;
-              if (typeof additions === "string") { try { additions = JSON.parse(additions); } catch {} }
-              const id = u.speaker_id ?? additions?.speaker_id ?? additions?.speaker;
-              if (id == null) return "missing";
-              if (settings.people?.members?.some(p => p.voiceName === id || p.voiceId === id)) return "registered";
-              return /^\d{1,3}$/.test(String(id)) ? `anonymous:${id}` : "unregistered";
-            }), candidates: utterances.slice(0, 12).map(u => {
-              let attributes = u.attributes;
-              if (typeof attributes === "string") { try { attributes = JSON.parse(attributes); } catch { attributes = null; } }
-              return (Array.isArray(attributes?.voiceprint_matches) ? attributes.voiceprint_matches : []).slice(0, 10).map(match => ({
-                personId: settings.people?.members?.find(p => p.voiceId === match.id && p.voiceName === match.name)?.personId || null,
-                similarity: typeof match.similarity === "number" && Number.isFinite(match.similarity) ? match.similarity : null,
-              }));
-            }) };
+          this.speaker.diagnostic = voiceprintDiagnostic(event.value.result, settings, this.totalBytes, {
+            rms: Math.sqrt(this.audioPower / Math.max(1, this.audioSamples)), peak: this.audioPeak,
+            clippedFraction: this.audioClipped / Math.max(1, this.audioSamples),
+          });
           this.resolve(this.text);
         }
       } catch (error) { this.reject(error); this.close(); }
@@ -169,6 +184,13 @@ export class VolcengineTranscriber {
   }
   push(pcm) {
     if (this.closed || this.finishing) return;
+    // Retain only aggregate levels, never a second copy of the recording.
+    for (let i = 0; i + 1 < pcm.length; i += 2) {
+      const sample = pcm.readInt16LE(i) / 32768;
+      this.audioSamples++; this.audioPower += sample * sample;
+      this.audioPeak = Math.max(this.audioPeak, Math.abs(sample));
+      if (Math.abs(sample) >= 0.999) this.audioClipped++;
+    }
     this.totalBytes += pcm.length;
     if (this.totalBytes > this.settings.input.maxRecordingSeconds * 32000 + 6400) { this.reject(new Error("录音超出限制")); this.close(); return; }
     this.pending.push(pcm); this.pendingBytes += pcm.length;

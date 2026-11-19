@@ -145,9 +145,9 @@ test("timeouts report failure and cancellation preserves the caller's abort reas
 });
 
 test("source checks trigger for explicit search and timely questions, respecting opt-out", () => {
-  for (const query of ["上网查一下 ESP32 官方文档", "上海明天天气如何", "最新科技新闻", "帮我查一下乐鑫官网", "search the web for ESP32"])
+  for (const query of ["上网查一下 ESP32 官方文档", "上海明天天气如何", "最新科技新闻", "帮我查一下乐鑫官网", "search the web for ESP32", "你能联网搜索 ESP32 官网吗"])
     assert.equal(needsWebSearch(query), true, query);
-  for (const query of ["今天很开心", "讲讲三角函数", "不要联网，解释搜索原理", "不用上网查，凭常识回答", "解释原理 without browsing", "帮我查一下之前的聊天记录", "你能联网吗"])
+  for (const query of ["今天很开心", "讲讲三角函数", "不要联网，解释搜索原理", "不用上网查，凭常识回答", "解释原理 without browsing", "帮我查一下之前的聊天记录", "你能联网吗", "你能联网搜索吗？", "你有没有联网搜索的能力啊"])
     assert.equal(needsWebSearch(query), false, query);
 });
 

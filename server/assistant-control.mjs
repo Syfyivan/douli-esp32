@@ -17,6 +17,12 @@ function number(value) {
   return value.length === 1 ? chineseDigits.indexOf(value) : NaN;
 }
 const change = patch => ({ kind: "change", ...patch });
+function setVolume(raw) {
+  const value = number(raw);
+  return Number.isInteger(value) && value >= 0 && value <= 100
+    ? change({ volume: { mode: "set", value } })
+    : { kind: "clarify", target: "volume", question: "音量可以设为零到百分之一百，你想调到多少？" };
+}
 export function fastAssistantControl(text, { name = "豆梨", pendingStyle = false, pendingVolume = false } = {}) {
   if (blocked.test(text)) return null;
   let s = text.replace(/[\s，,。.!！?？]/gu, "");
@@ -25,13 +31,13 @@ export function fastAssistantControl(text, { name = "豆梨", pendingStyle = fal
   let m;
   if (pendingVolume && (m = s.match(/^(?:再)?(大|小)(?:声)?(?:一点|点|一些)$/)))
     return change({ volume: { mode: "delta", value: m[1] === "大" ? 10 : -10 } });
+  if (pendingVolume && (m = s.match(/^(?:那就|那|再)?(?:(?:调节|调整|调|设置|设|改)(?:到|成|为))?(?:百分之)?([\d零〇一二两三四五六七八九十百]+)(?:%|％)?$/)))
+    return setVolume(m[1]);
   if (/^(?:现在|当前)?(?:你的)?(?:音量|声音)(?:是|有)?(?:多少|多大)$/.test(s)) return { kind: "query", volume: { mode: "query" } };
   if (/^(?:静音|关闭声音|把声音关掉)$/.test(s)) return change({ volume: { mode: "set", value: 0 } });
   if (/^(?:取消静音|恢复声音|打开声音)$/.test(s)) return change({ volume: { mode: "unmute" } });
   if ((m = s.match(/^(?:把)?(?:你的|音箱的)?(?:声音|音量)(?:调节|调整|调|设置|设|开)?(?:到|成|为)?(?:百分之)?([\d零〇一二两三四五六七八九十百]+)(?:%|％)?$/))) {
-    const value = number(m[1]);
-    return Number.isInteger(value) && value >= 0 && value <= 100
-      ? change({ volume: { mode: "set", value } }) : { kind: "clarify", question: "音量可以设为零到百分之一百，你想调到多少？" };
+    return setVolume(m[1]);
   }
   if ((m = s.match(/^(?:把)?(?:你的|音箱的)?(?:(?:声音|音量)(?:调节|调整|调|开|放)?(大|高|响|小|低)|(?:声音|音量)?(调大|调高|调低|调小|开大|关小)|(大|小)声)(?:一?点|一些|一点点|点儿)?$/)))
     return change({ volume: { mode: "delta", value: /小|低/.test(m[1] || m[2] || m[3]) ? -10 : 10 } });
@@ -83,13 +89,28 @@ export function validateAssistantControl(data) {
 
 export class AssistantControl {
   constructor(store, classify = complete) { this.store = store; this.classify = classify; }
+  recentResults(sessionId) {
+    if (!sessionId) return [];
+    return this.store.messages(sessionId)
+      .filter(m => m.role === "assistant" && m.metadata?.assistantControl &&
+        !this.store.db.prepare("SELECT 1 FROM memory_exclusions WHERE message_id=?").get(m.id))
+      .slice(-6).map(m => {
+        const { status, changes = {}, volume } = m.metadata.assistantControl;
+        return { at: m.created_at, status,
+          changes: Object.fromEntries(["tone", "replyLength", "humor"].filter(k => changes[k] !== undefined).map(k => [k, changes[k]])),
+          ...(volume ? { volume: Object.fromEntries(["status", "value", "requested", "hardware"].filter(k => volume[k] !== undefined).map(k => [k, volume[k]])) } : {}) };
+      });
+  }
   async handle({ text, sessionId, volumeControl, signal }) {
     signal?.throwIfAborted();
     const settings = this.store.settings();
     const last = this.store.lastMessage ? this.store.lastMessage(sessionId) : this.store.messages(sessionId).at(-1);
     const pendingStyle = last?.role === "assistant" && last.metadata?.assistantControl?.target === "style" &&
       last.metadata.assistantControl.status === "clarify" && Date.now() - Date.parse(last.created_at) < 120000;
-    const pendingVolume = !!last?.metadata?.assistantControl?.volume && Date.now() - Date.parse(last.created_at) < 120000;
+    const lastAge = Date.now() - Date.parse(last?.created_at);
+    const pendingVolume = last?.role === "assistant" &&
+      (!!last.metadata?.assistantControl?.volume || last.metadata?.assistantControl?.target === "volume") &&
+      lastAge >= 0 && lastAge < 120000;
     if (text.length > 500 || blocked.test(text)) return null;
     let command = fastAssistantControl(text, { name: settings.assistant.name, pendingStyle, pendingVolume });
     if (!command && !candidate.test(text) && !pendingStyle) return null;

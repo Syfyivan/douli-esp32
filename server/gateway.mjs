@@ -21,7 +21,7 @@ import { SpeechSegments } from "./voice-segments.mjs";
 import { TurnDetector, isBackchannel, isExplicitInterruption, isPlaybackEcho } from "./turn-detector.mjs";
 import { validateFrame } from "./vision.mjs";
 import { isNight, deviceConfig } from "./config.mjs";
-import { isFarewell } from "./voice-commands.mjs";
+import { isFarewell, isWakeGreeting } from "./voice-commands.mjs";
 import { conversationEndIntent } from "./conversation-intent.mjs";
 import { controlSpeaker } from "./speaker-control.mjs";
 import { isLocalOrigin } from "./local-origin.mjs";
@@ -32,6 +32,7 @@ import { guestReply } from "./guest-chat.mjs";
 import { Mediation, requestsMediation } from "./mediation.mjs";
 import { AudioPacer } from "./audio-pacer.mjs";
 import { audibleContext } from "./voice-state.mjs";
+import { VoiceSample } from "./voice-sample.mjs";
 
 const DEVICE_STANDBY_MS = 30 * 60 * 1000;
 
@@ -370,7 +371,7 @@ export class VoiceConnection {
       // Transport traffic (including silent audio) does not extend a conversation.
       // Let recognition, generation and playback finish before entering standby.
       if (
-        options.device && this.hello && !this.standby &&
+        options.device && this.hello && !this.standby && !this.voiceSample &&
         !["thinking", "speaking"].includes(this.state) &&
         Date.now() - this.lastConversationActivity >= DEVICE_STANDBY_MS
       ) {
@@ -404,6 +405,7 @@ export class VoiceConnection {
     socket.on("error", () => this.close());
     socket.on("close", () => {
       this.clearMediation();
+      this.voiceSample?.cancel("设备连接已断开，请重新录入");
       this.saveConversation();
       this.realtime?.close();
       clearInterval(this.timer);
@@ -639,6 +641,21 @@ export class VoiceConnection {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.close();
     else if (this.ws.readyState === WebSocket.CONNECTING) this.ws.terminate();
   }
+  recordVoiceSample(onProgress) {
+    if (!this.options.device || !this.hello || !this.persistent || this.ws.readyState !== WebSocket.OPEN)
+      throw new Error("请先连接支持持续连接的音箱");
+    if (this.voiceSample) throw new Error("音箱正在录入声纹");
+    // End ordinary capture first. Enrollment starts only after the next wake.
+    if (!this.standby) this.endConversation("voice_enrollment");
+    const sample = new VoiceSample({ onProgress });
+    this.voiceSample = sample;
+    return sample.promise.finally(() => {
+      if (this.voiceSample === sample) {
+        this.voiceSample = null;
+        if (this.ws.readyState === WebSocket.OPEN) this.endConversation("voice_enrollment_finished");
+      }
+    });
+  }
   saveConversation() {
     const id = this.options.device?.id;
     if (!id || this.store.closed || this.superseded || (!this.conversationStarted && !this.conversationEnded)) return;
@@ -667,6 +684,7 @@ export class VoiceConnection {
   }
   finishConversation() {
     this.clearMediation();
+    if (this.voiceSample?.started) this.voiceSample.cancel("录音被中断，请重新录入");
     this.conversationEnded = true;
     this.saveConversation();
     this.realtime?.close(); this.realtime = null;
@@ -821,6 +839,9 @@ export class VoiceConnection {
       this.mode = m.mode || this.mode || "auto";
       if (m.state === "start") {
         this.resumeConversation();
+        if (this.voiceSample) {
+          this.abort(); this.state = "listening"; this.voiceSample.begin(); return;
+        }
         // ESP32 sends detect then start for the same wake-up. Starting capture
         // is not an interruption of the greeting or utterance triggered by that detect.
         // Explicit abort/standby and actual speech interruption still cancel it.
@@ -835,6 +856,7 @@ export class VoiceConnection {
       }
       if (m.state === "stop") {
         if (this.standby) return;
+        if (this.voiceSample) { this.voiceSample.finish(); return; }
         if (this.realtime) { this.realtime.commit(); return; }
         const pcm = this.buffer.finish();
         if (pcm?.length) void this.process(pcm);
@@ -847,6 +869,9 @@ export class VoiceConnection {
       }
       if (m.state === "detect" && m.text) {
         this.resumeConversation();
+        if (this.voiceSample) {
+          this.abort(); this.state = "listening"; this.voiceSample.begin(); return;
+        }
         const words = this.store.settings().assistant.wakeWords;
         if (words.some((w) => m.text.replace(/[，。！？\s]/g, "").includes(w)))
           void this.greet();
@@ -907,6 +932,7 @@ export class VoiceConnection {
       this.inputAudio.lastVoicedAt = this.inputAudio.at;
     }
     if (voiced) this.lastSpeechAt = Date.now();
+    if (this.voiceSample) { this.voiceSample.push(pcm, voiced); return; }
     if (this.bargeCandidate) { this.captureBarge(pcm, voiced); return; }
     if (
       ["speaking", "thinking"].includes(this.call.output) &&
@@ -1238,6 +1264,12 @@ export class VoiceConnection {
       }
       this.lastConversationActivity = Date.now();
       const addressed = this.mediation.active ? text.trim() : correctAssistantAddress(text, this.store.settings());
+      if (this.options.device && isWakeGreeting(addressed, this.store.settings().assistant.wakeWords)) {
+        // A wake phrase can also arrive through ASR while already listening.
+        // Give the same greeting as local wake detection, without using these
+        // few syllables to select a personal profile or starting a chat turn.
+        await this.greet(); return;
+      }
       turn.mediation = this.mediation.active || requestsMediation(addressed, this.store.settings().assistant.name);
       let turnEngine = this.engine, turnStore = this.store, sessionId = this.session.id;
       let mediationReply;

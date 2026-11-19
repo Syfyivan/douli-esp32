@@ -8,7 +8,19 @@ export function PeoplePanel({ state, api, act, notify, Section, Button }) {
   const [seconds, setSeconds] = useState(0);
   const [sample, setSample] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [source, setSource] = useState("device");
+  const [deviceId, setDeviceId] = useState("");
+  const job = state.people.deviceEnrollment;
+  const deviceBusy = job && ["waiting", "recording", "uploading"].includes(job.status);
+  const locked = busy || recording || deviceBusy;
+  const devices = (state.devices || []).filter(device => device.online && device.connection?.persistent);
+  const selectedDevice = deviceId || devices[0]?.id || "";
   const capture = useRef(null), mounted = useRef(true);
+  useEffect(() => {
+    if (!deviceBusy) return;
+    const timer = setInterval(() => { void act(async () => {}); }, 1000);
+    return () => clearInterval(timer);
+  }, [deviceBusy, act]);
   const stop = () => {
     const current = capture.current; if (!current) return;
     capture.current = null; clearInterval(current.timer);
@@ -74,7 +86,7 @@ export function PeoplePanel({ state, api, act, notify, Section, Button }) {
             });
           }} />
         <span>{person.enrolled ? "已录入声音" : "尚未录入"}</span>
-        {person.enrolled && <Button disabled={busy || recording} onClick={() => act(() => api(`/people/${person.id}/voiceprint`, "DELETE"))}>停用声纹</Button>}
+        {person.enrolled && <Button disabled={locked} onClick={() => act(() => api(`/people/${person.id}/voiceprint`, "DELETE"))}>停用声纹</Button>}
       </div>)}
       <form onSubmit={event => { event.preventDefault(); act(async () => { await api("/people", "POST", { name }); setName(""); }); }}>
         <div className="row-actions"><input aria-label="新档案称呼" placeholder="例如：我、女朋友" value={name} onChange={e => setName(e.target.value)} maxLength={40} /><Button type="submit" disabled={!name.trim()}>添加档案</Button></div>
@@ -83,15 +95,23 @@ export function PeoplePanel({ state, api, act, notify, Section, Button }) {
       <p className="small muted">个人档案目前保存在这台设备，尚不参加跨设备同步。模型、声音和家居设置共用。</p>
     </Section>
     <Section title="录入各自的声音" subtitle="请两位本人分别操作，在安静处用平时的音量自然说话 10–20 秒。">
-      <label>录入给谁<select value={target} disabled={recording || busy} onChange={e => { setTarget(e.target.value); setSample(null); setConsent(false); }}><option value="">选择档案</option>{state.people.people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      <label>录入给谁<select value={target} disabled={locked} onChange={e => { setTarget(e.target.value); setSample(null); setConsent(false); }}><option value="">选择档案</option>{state.people.people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      <label>录音设备<select value={source} disabled={locked} onChange={e => { setSource(e.target.value); setSample(null); }}><option value="device">音箱麦克风（推荐）</option><option value="browser">此页面的麦克风</option></select></label>
+      {source === "device" && <>
+        <label>音箱<select value={selectedDevice} disabled={locked} onChange={e => setDeviceId(e.target.value)}>{!devices.length && <option value="">暂无在线音箱</option>}{devices.map(device => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label>
+        <p className="small muted">用平常使用的音箱、距离和音量录入。点击后唤醒音箱，直接朗读约 20 秒；录完自动上传，随后恢复待机。</p>
+      </>}
       <p>可以读：“你好豆梨，这是我的声音。以后我们聊天时，请把我的日常习惯和偏好记在我的档案里。今天的天气不错，我想安排一下接下来的生活。”</p>
       <p className="small muted">录音会通过临时链接交给火山引擎，提取并保存云端声纹用于匹配。本机不落盘保存注册录音；链接在请求结束或 60 秒后失效。“停用声纹”会停止本地匹配并请求服务端软删除，不等于云端物理删除。</p>
-      <label><input type="checkbox" checked={consent} disabled={recording || busy} onChange={e => setConsent(e.target.checked)} /> 我是该档案本人，同意此次录音上传及云端声纹处理</label>
+      <label><input type="checkbox" checked={consent} disabled={locked} onChange={e => setConsent(e.target.checked)} /> 我是该档案本人，同意此次录音上传及云端声纹处理</label>
       <div className="row-actions">
-        <Button disabled={!target || !consent || busy || !state.people.enrollmentAvailable} onClick={recording ? stop : record}>{recording ? `结束录音（${seconds} 秒）` : "开始录音"}</Button>
-        {sample && !recording && <Button primary disabled={!consent || busy} onClick={submit}>{busy ? "正在录入…" : `上传并录入（${(sample.length / 32000).toFixed(1)} 秒）`}</Button>}
-        <Button disabled={busy || recording} onClick={() => act(async () => { await api("/people/voiceprint/check", "POST", {}); notify("声纹服务连接成功"); })}>检查连接</Button>
+        {source === "browser" ? <Button disabled={!target || !consent || busy || deviceBusy || !state.people.enrollmentAvailable} onClick={recording ? stop : record}>{recording ? `结束录音（${seconds} 秒）` : "开始录音"}</Button>
+          : <Button disabled={!target || !consent || locked || !selectedDevice || !state.people.enrollmentAvailable} onClick={() => act(() => api(`/people/${target}/voiceprint/device`, "POST", { consent, deviceId: selectedDevice }))}>从音箱录入</Button>}
+        {sample && !recording && <Button primary disabled={!consent || busy || deviceBusy} onClick={submit}>{busy ? "正在录入…" : `上传并录入（${(sample.length / 32000).toFixed(1)} 秒）`}</Button>}
+        <Button disabled={locked} onClick={() => act(async () => { await api("/people/voiceprint/check", "POST", {}); notify("声纹服务连接成功"); })}>检查连接</Button>
+        {deviceBusy && job.status !== "uploading" && <Button onClick={() => act(() => api(`/people/${job.personId}/voiceprint/device`, "DELETE"))}>取消音箱录入</Button>}
       </div>
+      {job && <p role="status">{job.status === "waiting" ? "等待唤醒音箱，请直接开始朗读。" : job.status === "recording" ? `正在录音：${Math.floor(job.seconds)} / 20 秒` : job.status === "uploading" ? "正在上传并更新声纹…" : job.status === "completed" ? "声纹已更新，请在音箱前试说几句长短不同的话。" : job.error || "录音已取消"}</p>}
       {!state.people.enrollmentAvailable && <p>尚未配置 HTTPS 设备入口，暂时不能传送注册录音。仍可手动切换个人档案。</p>}
     </Section>
   </>;

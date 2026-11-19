@@ -5,6 +5,8 @@ import { Store } from "./store.mjs";
 import { MemoryService } from "./memory-service.mjs";
 import { ChatEngine } from "./engine.mjs";
 import { HealthService } from "./health-service.mjs";
+import { ComputerTasks } from "./computer-tasks.mjs";
+import { COMPUTER_VOCABULARY } from "./computer-language.mjs";
 
 const idPattern = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
 export function voiceprintIdentifier(result, kind, fallback) {
@@ -27,6 +29,7 @@ export class People {
   active() { return this.list().length > 0; }
   state() { return { people: this.list().map(p => ({ id: p.id, name: p.name, enrolled: !!p.voice_id })),
     selectedId: this.scope.getStore()?.person?.id || "", enrollmentAvailable: !!this.remoteConfig,
+    deviceEnrollment: this.deviceEnrollment || null,
     voiceIdentification: this.root.store.settings().people.voiceIdentification }; }
   create(name) {
     if (typeof name !== "string" || !name.trim() || name.length > 40) throw new Error("请填写 1–40 字的称呼");
@@ -51,10 +54,19 @@ export class People {
     const memory = new MemoryService(store), health = new HealthService(store);
     const engine = new ChatEngine(store, this.root.home, memory);
     engine.health = health;
-    // Computer task history belongs to the original space until it is scoped.
+    // Share this machine's connection and enable switch, not another person's
+    // task history, request receipts or conversation-to-task associations.
+    const computer = new ComputerTasks(store, { configuration: this.root.computer,
+      client: this.root.computer.client, pollMs: this.root.computer.pollMs });
+    engine.computer = computer;
     engine.person = person;
-    const bundle = { person, store, memory, health, engine };
-    this.bundles.set(id, bundle); memory.start(); return bundle;
+    const bundle = { person, store, memory, health, engine, computer };
+    this.bundles.set(id, bundle); memory.start(); computer.start(); return bundle;
+  }
+  start() {
+    // Resume existing personal tasks even before their owner opens a page or
+    // speaks again; restarting must not submit a new copy of the task.
+    for (const person of this.list()) this.bundle(person.id);
   }
   proxy(key) {
     return new Proxy(this.root[key], { get: (_target, property) => {
@@ -63,7 +75,9 @@ export class People {
     } });
   }
   voiceContext() {
-    return JSON.stringify({ vocabulary: [this.root.store.settings().assistant.name, ...this.list().map(p => p.name)], recent: [] });
+    const computerEnabled = this.root.computer.enabled();
+    return JSON.stringify({ vocabulary: [this.root.store.settings().assistant.name, ...this.list().map(p => p.name),
+      ...(computerEnabled ? COMPUTER_VOCABULARY : [])], computerEnabled, recent: [] });
   }
   voiceBundle(speaker) {
     if (speaker?.status !== "matched" || !this.list().some(p => p.id === speaker.personId && p.voice_id)) return null;
@@ -95,11 +109,41 @@ export class People {
     settings.people.voiceIdentification = settings.people.members.length > 0;
     this.root.store.saveSettings(settings);
   }
-  async enroll(id, input) {
+  deviceEnrollmentActive(id) {
+    const job = this.deviceEnrollment;
+    return !!job && (!id || job.personId === id) && ["waiting", "recording", "uploading"].includes(job.status);
+  }
+  startDeviceEnrollment(id, input) {
+    this.bundle(id);
+    if (input.consent !== true) throw new Error("请由本人确认声纹注册和云端处理后再录入");
+    if (!this.remoteConfig) throw new Error("录入声纹需要先配置 HTTPS 设备入口");
+    if (this.deviceEnrollmentActive() || this.enrolling.has(id)) throw new Error("正在录入，请稍候");
+    const connection = this.root.gateway.connections.get(input.deviceId);
+    if (!connection) throw new Error("音箱尚未连接");
+    const job = { personId: id, deviceId: input.deviceId, status: "waiting", seconds: 0, speechSeconds: 0 };
+    const sample = connection.recordVoiceSample(progress => Object.assign(job, progress));
+    this.deviceEnrollment = job;
+    this.deviceEnrollmentDone = sample.then(async pcm => {
+      job.status = "uploading";
+      try {
+        await this.enroll(id, { consent: true, pcm: pcm.toString("base64") }, job);
+        job.status = "completed";
+      } finally { pcm.fill(0); }
+    }).catch(error => { job.status = job.status === "cancelled" ? "cancelled" : "failed"; job.error = error.message; });
+    return { ...job };
+  }
+  cancelDeviceEnrollment(id) {
+    if (!this.deviceEnrollmentActive(id)) return { ok: true };
+    if (this.deviceEnrollment.status === "uploading") throw new Error("录音已提交，请等待云端处理完成");
+    this.deviceEnrollment.status = "cancelled";
+    this.root.gateway.connections.get(this.deviceEnrollment.deviceId)?.voiceSample?.cancel();
+    return { ok: true };
+  }
+  async enroll(id, input, boardJob) {
     const person = this.bundle(id).person;
     if (!person || input.consent !== true) throw new Error("请由本人确认声纹注册和云端处理后再录入");
     if (!this.remoteConfig) throw new Error("录入声纹需要先配置可访问的 HTTPS 设备入口，用于临时传送录音");
-    if (this.enrolling.has(id)) throw new Error("正在录入，请稍候");
+    if (this.enrolling.has(id) || (this.deviceEnrollmentActive(id) && boardJob !== this.deviceEnrollment)) throw new Error("正在录入，请稍候");
     if (typeof input.pcm !== "string" || input.pcm.length > 1_280_004 || !/^[A-Za-z0-9+/]+={0,2}$/.test(input.pcm)) throw new Error("录音无效");
     const pcm = Buffer.from(input.pcm, "base64");
     if (pcm.length < 160000 || pcm.length > 960000 || pcm.length % 2) throw new Error("请录制 5–30 秒音频");
@@ -123,7 +167,7 @@ export class People {
       const voiceId = voiceprintIdentifier(result, "voice", person.voice_id);
       this.root.store.db.prepare("UPDATE people SET voice_id=?,voice_name=? WHERE id=?").run(voiceId, voiceName, id);
       this.updateSettings(); return { enrolled: true };
-    } finally { this.audio.delete(token); this.enrolling.delete(id); }
+    } finally { this.audio.delete(token); pcm.fill(0); this.enrolling.delete(id); }
   }
   temporaryAudio(path) {
     const token = /^\/voiceprint-audio\/([a-f0-9]{64})\.wav$/.exec(path)?.[1];
@@ -133,15 +177,18 @@ export class People {
   }
   async removeVoice(id) {
     const person = this.bundle(id).person;
-    if (this.enrolling.has(id)) throw new Error("请等待录入完成");
+    if (this.enrolling.has(id) || this.deviceEnrollmentActive(id)) throw new Error("请等待录入完成");
     if (person.voice_id) await this.call("UpdateVoiceprint", { Action: 2, SpeakId: person.voice_id });
     this.root.store.db.prepare("UPDATE people SET voice_id=NULL,voice_name=NULL WHERE id=?").run(id);
     this.updateSettings(); return { ok: true };
   }
   async close() {
+    if (this.deviceEnrollmentActive()) this.root.gateway.connections.get(this.deviceEnrollment.deviceId)?.voiceSample?.cancel("服务已停止，请重新录入");
+    await this.deviceEnrollmentDone;
     this.audio.clear();
     for (const bundle of this.bundles.values()) {
       for (const id of bundle.engine.active.keys()) bundle.engine.abort(id);
+      await bundle.computer.close();
       await bundle.memory.stop(); bundle.store.close();
     }
   }
@@ -162,5 +209,7 @@ export function registerPeopleRoutes(admin, people) {
   });
   admin.post("/api/people/voiceprint/check", async () => people.check());
   admin.post("/api/people/:id/voiceprint", async req => people.enroll(req.params.id, req.body || {}));
+  admin.post("/api/people/:id/voiceprint/device", async req => people.startDeviceEnrollment(req.params.id, req.body || {}));
+  admin.delete("/api/people/:id/voiceprint/device", async req => people.cancelDeviceEnrollment(req.params.id));
   admin.delete("/api/people/:id/voiceprint", async req => people.removeVoice(req.params.id));
 }

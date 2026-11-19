@@ -44,7 +44,7 @@ export const defaults = {
     replyLength: "简短",
     humor: 30,
     avoid: "不要每次回答都反问；不要自称唯一理解用户的人。",
-    wakeWords: ["你好豆梨", "豆梨", "你好小智", "小智"],
+    wakeWords: ["你好豆梨", "豆梨你好", "豆梨", "你好小智", "小智"],
     greeting: "我在，慢慢说。",
     night: { enabled: true, start: "22:00", end: "07:00", volume: 0.45 },
   },

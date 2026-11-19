@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
-import { VolcengineTranscriber, readAsrPacket } from "../server/volcengine-asr.mjs";
+import { VolcengineTranscriber, readAsrPacket, voiceprintDiagnostic } from "../server/volcengine-asr.mjs";
 import { LiveTranscriber } from "../server/providers.mjs";
 import { defaults } from "../server/config.mjs";
 
@@ -94,12 +94,31 @@ test("voiceprint request uses the group and only attributes identity from the fi
   let partialReady;
   const partial = new Promise(resolve => { partialReady = resolve; });
   const live = new VolcengineTranscriber(settings, "", partialReady); t.after(() => live.close());
-  await once(live.socket, "open"); live.push(Buffer.alloc(64000)); await partial;
+  const pcm = Buffer.alloc(64000);
+  for (let i = 0; i < pcm.length; i += 2) pcm.writeInt16LE(i % 4 ? -16384 : 16384, i);
+  await once(live.socket, "open"); live.push(pcm); await partial;
   assert.equal(live.speaker.status, "unknown");
   assert.equal(await live.finish(), "你好豆梨"); assert.equal(live.speaker.personId, "b");
   assert.deepEqual(live.speaker.diagnostic.labels, ["anonymous:0"]);
   assert.deepEqual(live.speaker.diagnostic.candidates, [[{ personId: "a", similarity: 0.12 }, { personId: "b", similarity: 0.84 }]]);
+  assert.deepEqual(live.speaker.diagnostic.audio, { rms: 0.5, peak: 0.5, clippedFraction: 0 });
+  assert.equal(live.speaker.diagnostic.policy.minSimilarity, 0.5);
   assert.equal(request.enable_nonstream, true); assert.equal(request.enable_speaker_info, true);
   assert.equal(request.ssd_version, "200", "registered matching requires the large-model SSD version");
   assert.equal(request.ssd_mode, 2); assert.deepEqual(request.voiceprints, [{ id: "", group_id: "fixture-group" }]);
+});
+
+test("voiceprint diagnostics handle serialized metadata without retaining transcripts or cloud identifiers", () => {
+  const settings = { people: { members: [{ personId: "person", voiceName: "private-cloud-name", voiceId: "private-cloud-id" }] } };
+  const diagnostic = voiceprintDiagnostic({ utterances: [{ text: "private-transcript",
+    additions: JSON.stringify({ speaker_id: "private-cloud-name" }),
+    attributes: JSON.stringify({ voiceprint_matches: [{ id: "private-cloud-id", name: "private-cloud-name", similarity: 0.15 }] }),
+  }] }, settings, 71040);
+  assert.equal(diagnostic.audioMs, 2220);
+  assert.deepEqual(diagnostic.labels, ["registered"]);
+  assert.deepEqual(diagnostic.candidates, [[{ personId: "person", similarity: 0.15 }]]);
+  assert.ok(!JSON.stringify(diagnostic).includes("private-"));
+  const invalid = voiceprintDiagnostic({ utterances: [{ additions: "bad-json", attributes: "bad-json" },
+    { attributes: { voiceprint_matches: [null, { similarity: Infinity }] } }] }, settings, 0);
+  assert.deepEqual(invalid.candidates, [[], [{ personId: null, similarity: null }, { personId: null, similarity: null }]]);
 });

@@ -1085,7 +1085,7 @@ test("ESP32 voice settings flow through ASR, device volume verification, spoken 
     send({ type: "mcp", payload: { jsonrpc: "2.0", id: p.id, result: { content: [{ type: "text", text: JSON.stringify({ audio_speaker: { volume } }) }] } } });
   });
   const sound = deviceAudio(t, ws);
-  for (const text of ["声音小一点", "再大一点", "以后回复详细一点"]) {
+  for (const text of ["声音小一点", "调到百分之五十。", "再大一点", "以后回复详细一点"]) {
     options.asrText = text;
     const start = out.messages.length;
     send({ type: "listen", state: "start", mode: "manual" });
@@ -1094,13 +1094,13 @@ test("ESP32 voice settings flow through ASR, device volume verification, spoken 
     await out.wait(m => m.slice(start).some(e => e.type === "tts" && e.state === "stop" && !e.interrupted));
     assert.ok(out.messages.slice(start).some(e => e.type === "tts" && e.state === "sentence_start"));
   }
-  assert.equal(asrCalls(), 3);
-  assert.deepEqual(writes, [60, 70]);
+  assert.equal(asrCalls(), 4);
+  assert.deepEqual(writes, [60, 50, 60]);
   assert.equal(received.length, 0, "common setting commands must not depend on the answering or routing model");
   assert.equal(app.store.settings().assistant.replyLength, "详细");
   assert.equal(connection.config.volume, 1, "speaker setting must not double-attenuate server audio");
   const messages = app.store.messages(connection.session.id);
-  assert.equal(messages.filter(m => m.role === "assistant" && m.metadata.assistantControl?.status === "applied").length, 3);
+  assert.equal(messages.filter(m => m.role === "assistant" && m.metadata.assistantControl?.status === "applied").length, 4);
   assert.ok(!app.memory.summaryGroups().some(g => g.sessionId === connection.session.id));
   const before = out.messages.length;
   send({ type: "listen", state: "detect", text: "你好" });
@@ -1180,10 +1180,10 @@ test("idle prewarm removes cloud TTS from the first wake and survives later stan
   assert.equal(speechCalls(), 1);
   assert.equal(out.binary.length, 0, "prewarming must be silent");
   const connection = app.gateway.connections.get(id);
-  for (let wake = 0; wake < 2; wake++) {
+  for (const wakeWord of ["你好豆梨", "豆梨你好"]) {
     const start = out.messages.length;
     connection.lastSpeechAt = Date.now() - 3600000;
-    send({ type: "listen", state: "detect", text: "你好豆梨" });
+    send({ type: "listen", state: "detect", text: wakeWord });
     send({ type: "listen", state: "start", mode: "auto" });
     await out.wait(m => m.slice(start).some(e => e.type === "tts" && e.state === "stop" && !e.interrupted));
     assert.equal(speechCalls(), 1, "waking must not resynthesize the fixed greeting");
