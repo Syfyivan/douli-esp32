@@ -67,15 +67,15 @@ export class Mediation {
       c.role = "A"; c.phase = "statement";
       return "请第一位单独讲发生了什么。说完我会复述给你确认。";
     }
+    const edit = /^(?:更正|修改)(第一位|第二位)(?:的)?陈述$/.exec(cmd);
+    if (edit) {
+      const role = edit[1] === labels.A ? "A" : "B";
+      if (wrongSpeaker(role)) return `请${labels[role]}本人更正自己的陈述。`;
+      c.role = role; c.phase = "statement"; c.draft = null; c.question = null; c.notes = []; c.verdict = null;
+      delete c.statements[role];
+      return `请${labels[role]}重新讲一遍自己的完整陈述。之前的补问会清除，必要时我会再问。`;
+    }
     if (c.phase === "ready" || c.phase === "review") {
-      const edit = /^(?:更正|修改)(第一位|第二位)(?:的)?陈述$/.exec(cmd);
-      if (edit) {
-        const role = edit[1] === labels.A ? "A" : "B";
-        if (wrongSpeaker(role)) return `请${labels[role]}本人更正自己的陈述。`;
-        c.role = role; c.phase = "statement"; c.question = null; c.notes = []; c.verdict = null;
-        delete c.statements[role];
-        return `请${labels[role]}重新讲一遍自己的完整陈述。之前的补问会清除，必要时我会再问。`;
-      }
       if (c.phase === "review") return cmd === "重听判断" ? c.verdict : "说“重听判断”可以再听一次。要补充或重评，请说“更正第一位陈述”或“更正第二位陈述”。";
       if (!["请评理", "开始判断", "请判断", "可以评理了"].includes(cmd))
         return "双方的陈述已确认。说“请评理”提交，或说“更正第一位陈述”“更正第二位陈述”。";
@@ -92,9 +92,10 @@ export class Mediation {
         c.question = null;
       } else c.statements[c.role] = c.draft;
       c.draft = null;
-      if (!c.statements.B) {
-        c.role = "B"; c.phase = "statement";
-        return "第一位的说法已确认。现在请第二位讲自己的经过。";
+      const next = ["A", "B"].find(role => !c.statements[role]);
+      if (next) {
+        c.role = next; c.phase = "statement";
+        return `${who}的说法已确认。现在请${labels[next]}讲自己的经过。`;
       }
       c.phase = "ready";
       return "两位的陈述都已确认。准备好后说“请评理”，也可以先更正。";

@@ -92,3 +92,51 @@ test("safety exit and changed recipient close the case before submitting anythin
   assert.equal(room.active, false);
   assert.equal(model.mock.callCount(), 0);
 });
+
+test("either participant can correct a statement before both statements are ready", async t => {
+  const model = t.mock.method(globalThis, "fetch", () => { throw new Error("unexpected model call"); });
+  const { room, say } = session();
+  await say("开始评理");
+  await say("更正第二位陈述", "bob");
+  assert.equal(room.case.phase, "consent", "correction cannot skip consent");
+  await say("第一位同意", "alice");
+  await say("第二位同意", "bob");
+  await say("我们约的是七点。", "alice");
+  assert.match(await say("更正第二位陈述", "alice"), /第二位本人/);
+  assert.equal(room.case.draft, "我们约的是七点。");
+  assert.match(await say("更正第二位陈述", "bob"), /第二位重新讲/);
+  await say("第二位确认", "bob");
+  assert.equal(room.case.phase, "statement", "a correction command cannot become a statement");
+  await say("我记得是八点。", "bob");
+  assert.match(await say("第二位确认", "bob"), /请第一位/);
+  assert.deepEqual(room.case.statements, { B: "我记得是八点。" });
+  await say("请评理", "bob");
+  assert.equal(model.mock.callCount(), 0);
+  await say("约定改到了八点。", "alice");
+  await say("第一位确认", "alice");
+  assert.equal(room.case.phase, "ready");
+  assert.deepEqual(room.case.statements, { A: "约定改到了八点。", B: "我记得是八点。" });
+});
+
+test("correction during a clarification discards the old question and waits for confirmation", async t => {
+  const { room, say } = session();
+  const payloads = [];
+  t.mock.method(globalThis, "fetch", async (_, options) => {
+    payloads.push(JSON.parse(JSON.parse(options.body).messages[1].content));
+    const result = payloads.length === 1
+      ? { kind: "question", to: "A", text: "当时有答应吗？" }
+      : { kind: "verdict", text: "按更正后的约定判断。" };
+    return Response.json({ choices: [{ message: { content: JSON.stringify(result) } }] });
+  });
+  await ready(say);
+  await say("请评理");
+  await say("我需要更正最初的时间。");
+  assert.match(await say("更正第一位陈述"), /第一位重新讲/);
+  await say("第一位确认");
+  assert.equal(room.case.phase, "statement");
+  await say("最初约定是八点。");
+  await say("第一位确认");
+  await say("请评理");
+  assert.deepEqual(payloads[1].statements, { A: "最初约定是八点。", B: "我通知过你。" });
+  assert.deepEqual(payloads[1].clarifications, []);
+});
