@@ -140,3 +140,50 @@ test("correction during a clarification discards the old question and waits for 
   assert.deepEqual(payloads[1].statements, { A: "最初约定是八点。", B: "我通知过你。" });
   assert.deepEqual(payloads[1].clarifications, []);
 });
+
+test("late model responses stay discarded after a correction is confirmed", async t => {
+  for (const kind of ["verdict", "question", "error"]) {
+    await t.test(kind, async t => {
+      const { room, say } = session();
+      let release;
+      const wait = new Promise(resolve => { release = resolve; });
+      t.mock.method(globalThis, "fetch", async () => {
+        await wait;
+        if (kind === "error") throw new Error("old provider failure");
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ kind, to: "A", text: "旧陈述对应的响应" }) } }] });
+      });
+      await ready(say);
+      const pending = say("请评理");
+      await say("更正第一位陈述");
+      await say("双方改约到八点。");
+      await say("第一位确认");
+      release();
+      assert.equal(await pending, "");
+      assert.equal(room.case.phase, "ready");
+      assert.equal(room.case.statements.A, "双方改约到八点。");
+    });
+  }
+});
+
+test("an older judgment cannot skip the latest clarification after its answer is confirmed", async t => {
+  const { room, say } = session();
+  let release;
+  const wait = new Promise(resolve => { release = resolve; });
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    const request = ++requests;
+    if (request === 1) await wait;
+    const result = request === 2 ? { kind: "question", to: "B", text: "第一位回复过改期消息吗？" }
+      : { kind: "verdict", text: request === 1 ? "没有看过补充的旧判断" : "根据补充作出的判断" };
+    return Response.json({ choices: [{ message: { content: JSON.stringify(result) } }] });
+  });
+  await ready(say);
+  const older = say("请评理");
+  assert.match(await say("请评理"), /请第二位补充/);
+  await say("对方回复同意了。");
+  await say("第二位确认");
+  release();
+  assert.equal(await older, "");
+  assert.equal(room.case.phase, "ready");
+  assert.match(await say("请评理"), /根据补充作出的判断/);
+});

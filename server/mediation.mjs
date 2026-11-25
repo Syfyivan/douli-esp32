@@ -72,6 +72,7 @@ export class Mediation {
       const role = edit[1] === labels.A ? "A" : "B";
       if (wrongSpeaker(role)) return `请${labels[role]}本人更正自己的陈述。`;
       c.role = role; c.phase = "statement"; c.draft = null; c.question = null; c.notes = []; c.verdict = null;
+      c.judgment = null;
       delete c.statements[role];
       return `请${labels[role]}重新讲一遍自己的完整陈述。之前的补问会清除，必要时我会再问。`;
     }
@@ -109,6 +110,9 @@ export class Mediation {
   }
 
   async judge(c, profile, signal) {
+    const judgment = {};
+    c.judgment = judgment;
+    const current = () => this.case === c && c.judgment === judgment && c.phase === "ready";
     const canAsk = c.notes.length < maxClarifications;
     try {
       const raw = await complete(profile, [
@@ -116,7 +120,7 @@ export class Mediation {
         { role: "user", content: JSON.stringify({ statements: c.statements, clarifications: c.notes, canAsk }) },
       ], signal, { max_tokens: 800 });
       signal?.throwIfAborted();
-      if (this.case !== c || c.phase !== "ready") return "";
+      if (!current()) return "";
       const result = JSON.parse(raw.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/gi, ""));
       if (!["verdict", "question", "stop"].includes(result.kind) || typeof result.text !== "string" || !result.text.trim() || result.text.length > 800) throw new Error("invalid result");
       if (result.kind === "stop") { this.reset(); return "这次共同评理已停止。请先确保人身安全，必要时向可信任的人或当地紧急服务求助。"; }
@@ -129,8 +133,10 @@ export class Mediation {
       return `${c.verdict} 如果事实有误，可以更正任一位的陈述，或说“结束评理”。`;
     } catch {
       signal?.throwIfAborted();
-      if (this.case !== c) return "";
+      if (!current()) return "";
       return "这次没有取得有效判断。已确认的陈述还在，可以再说“请评理”或“结束评理”。";
+    } finally {
+      if (c.judgment === judgment) c.judgment = null;
     }
   }
 }
