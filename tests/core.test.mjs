@@ -87,6 +87,19 @@ test("endpointing accepts short utterances and manual mode retains speech across
   quiet.push(sound(900, 0));
   assert.equal(quiet.finish(), null);
 });
+test("pre-roll keeps the newest audio and resets cleanly between utterances", () => {
+  const buffer = new UtteranceBuffer({ ...defaults.input, minSpeechMs: 1 });
+  const older = Buffer.alloc(3200, 1);
+  const recent = Buffer.alloc(2800, 2);
+  const speech = Buffer.alloc(800, 3);
+  buffer.push(older, false, false);
+  buffer.push(recent, false, false);
+  buffer.push(speech, false, true);
+  assert.deepEqual(buffer.finish(), Buffer.concat([recent, speech]));
+  buffer.push(speech, false, true);
+  assert.deepEqual(buffer.finish(), speech);
+});
+
 test("settings survive restart, secrets are encrypted and blank public output is safe", (t) => {
   const { store, dir } = fixture(t);
   const s = mergeSettings(defaults, {

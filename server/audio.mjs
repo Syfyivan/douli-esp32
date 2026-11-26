@@ -142,6 +142,7 @@ export class UtteranceBuffer {
   reset() {
     this.frames = [];
     this.preRoll = [];
+    this.preRollBytes = 0;
     this.speechMs = 0;
     this.silenceMs = 0;
     this.totalMs = 0;
@@ -151,15 +152,13 @@ export class UtteranceBuffer {
     const ms = pcm.length / 32;
     if (!this.started) {
       this.preRoll.push(pcm);
-      while (
-        this.preRoll.reduce((sum, b) => sum + b.length, 0) > 6400 &&
-        this.preRoll.length > 1
-      )
-        this.preRoll.shift();
+      this.preRollBytes += pcm.length;
+      while (this.preRollBytes > 6400 && this.preRoll.length > 1)
+        this.preRollBytes -= this.preRoll.shift().length;
       if (!voiced) return null;
       this.started = true;
-      this.frames = [...this.preRoll];
-      this.totalMs = this.frames.reduce((sum, b) => sum + b.length / 32, 0);
+      this.frames = this.preRoll;
+      this.totalMs = this.preRollBytes / 32;
     } else {
       this.frames.push(pcm);
       this.totalMs += ms;
