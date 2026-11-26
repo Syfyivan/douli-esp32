@@ -113,6 +113,18 @@ test("first speech deadline flushes at 350 ms and does not restart when early te
   next.close();
 });
 
+test("long unpunctuated chunks split without losing or breaking Unicode characters", () => {
+  const output = [];
+  const input = "中".repeat(59) + "🐾" + "文🐱".repeat(110);
+  const segments = new SpeechSegments({ onSegment: segment => output.push(segment) });
+  segments.push(input);
+  segments.finish();
+  assert.equal(output[0], "中".repeat(59) + "🐾");
+  assert.ok(output.length > 2);
+  assert.equal(output.join(""), input);
+  assert.ok(output.every(segment => segment.isWellFormed()));
+});
+
 test("faster endpoint keeps ASR-punctuated hesitation and unfinished clauses open", () => {
   const detector = new TurnDetector(structuredClone(defaults));
   for (const text of ["我想。", "但是，", "因为。", "我还没说完！", "让我想想。"]) {

@@ -26,9 +26,12 @@ export class SpeechSegments {
       if (!match) match = this.pending.match(new RegExp(`^[\\s\\S]{${min},}?[，,；;：:]`));
       if (!match && (this.pending.length >= 100 || (timed && this.pending.length >= 12))) {
         // Avoid cutting a UTF-16 surrogate pair.
-        const chars = Array.from(this.pending);
-        const length = Math.min(chars.length, 60);
-        match = [chars.slice(0, length).join("")];
+        let end = 0, count = 0;
+        for (const character of this.pending) {
+          end += character.length;
+          if (++count === 60) break;
+        }
+        match = [this.pending.slice(0, end)];
       }
       if (!match) break;
       this.emit(match[0]);
