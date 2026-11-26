@@ -162,7 +162,7 @@ export async function searchWeb(config, query, signal, { fetchImpl = globalThis.
     } else if (provider === "brave") {
       const data = JSON.parse(body);
       if (data.error || (data.web?.results != null && !Array.isArray(data.web.results))) throw new Error("搜索服务返回无效数据");
-      rows = (data.web?.results || []).map(r => ({ title: r.title, url: r.url, snippet: r.description }));
+      rows = (data.web?.results || []).map(r => ({ title: r?.title, url: r?.url, snippet: r?.description }));
     } else {
       if (/<!DOCTYPE|<!ENTITY/i.test(body) || XMLValidator.validate(body) !== true) throw new Error("搜索服务未返回有效 RSS");
       const channel = xml.parse(body)?.rss?.channel;

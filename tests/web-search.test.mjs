@@ -149,6 +149,17 @@ for (const advertised of [false, true]) {
   });
 }
 
+test("Brave skips empty rows without losing valid search results", async () => {
+  const results = await searchWeb({ apiKey: "fixture" }, "query", undefined, {
+    fetchImpl: async () => Response.json({ web: { results: [
+      null,
+      { title: "Source", url: "https://example.com/", description: "excerpt" },
+      {},
+    ] } }),
+  });
+  assert.deepEqual(results.map(result => result.url), ["https://example.com/"]);
+});
+
 test("timeouts report failure and cancellation preserves the caller's abort reason", async () => {
   const fetchImpl = async (_url, { signal }) => new Promise((_, reject) => {
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
