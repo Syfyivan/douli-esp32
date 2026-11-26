@@ -128,6 +128,27 @@ test("Brave keys travel only in headers; bad payloads, HTTP errors and huge resp
   assert.equal(called, false);
 });
 
+for (const advertised of [false, true]) {
+  test(`oversized search results report the size limit and cancel the body (content-length=${advertised})`, async () => {
+    let cancelled = 0, reads = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        reads++;
+        controller.enqueue(new Uint8Array(reads <= 2 ? 512 * 1024 : 1));
+      },
+      cancel() { cancelled++; },
+    }, { highWaterMark: 0 });
+    const response = new Response(body, {
+      headers: advertised ? { "content-length": String(1024 * 1024 + 1) } : {},
+    });
+    await assert.rejects(searchWeb({}, "query", undefined, { fetchImpl: async () => response }),
+      { message: "必应：搜索结果过大" });
+    assert.equal(cancelled, 1);
+    assert.equal(reads, advertised ? 0 : 3, "stop reading as soon as the size limit is exceeded");
+    assert.equal(body.locked, false);
+  });
+}
+
 test("timeouts report failure and cancellation preserves the caller's abort reason", async () => {
   const fetchImpl = async (_url, { signal }) => new Promise((_, reject) => {
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });

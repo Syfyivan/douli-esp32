@@ -101,7 +101,7 @@ async function responseText(response, signal) {
     signal.throwIfAborted();
     size += chunk.byteLength;
     if (size > maxBytes) {
-      await response.body.cancel?.();
+      // Leaving the iterator cancels its reader; the body is locked here.
       throw new Error("搜索结果过大");
     }
     chunks.push(chunk);
