@@ -74,7 +74,7 @@ test("diary filters combine date, topic and kind with stable pagination", t => {
 
 test("invalid dates, ranges, content and topics leave no partially created source", t => {
   const { store } = fixture(t);
-  for (const change of [{ occurredAt: "2026-02-30" }, { text: " " }, { kind: "fact" }, { topics: ["unknown"] }, { endedAt: "2025-01-01" }])
+  for (const change of [{ occurredAt: "2026-02-30" }, { text: " " }, { kind: "fact" }, { topics: ["unknown"] }, { topics: ["exercise", ["life"]] }, { endedAt: "2025-01-01" }])
     assert.throws(() => saveEntry(store, entry(change)));
   assert.equal(store.sessions().length, 0);
 });

@@ -7,8 +7,9 @@ export function normalizeTopics(value = [], strict = false) {
     if (strict) throw error("请选择有效的生活主题");
     return [];
   }
-  if (strict && value.some(topic => !Object.hasOwn(diaryTopics, topic))) throw error("未知的生活主题");
-  return [...new Set(value.filter(topic => typeof topic === "string" && Object.hasOwn(diaryTopics, topic)))];
+  const valid = value.filter(topic => typeof topic === "string" && Object.hasOwn(diaryTopics, topic));
+  if (strict && valid.length !== value.length) throw error("未知的生活主题");
+  return [...new Set(valid)];
 }
 function timestamp(value, required = false) {
   if (value == null || value === "") {
