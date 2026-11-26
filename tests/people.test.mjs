@@ -51,8 +51,10 @@ test("concurrent personal routes isolate preferences, history, health and downlo
   assert.ok(!app.people.voiceContext().includes("A-only"));
   assert.equal((await app.admin.inject({ url: "/api/state", headers: { host: "localhost", "x-douli-person": "../" } })).statusCode, 404);
   const c = app.people.create("家人");
-  app.people.bundles.get(c.id)?.memory.stop();
-  app.people.bundles.get(c.id)?.store.close();
+  const simulatedColdBundle = app.people.bundles.get(c.id);
+  await simulatedColdBundle.computer.close();
+  await simulatedColdBundle.memory.stop();
+  simulatedColdBundle.store.close();
   app.people.bundles.delete(c.id);
   assert.equal((await app.admin.inject({ url: `/api/state?person=${c.id}`, headers: { host: "localhost", origin: "https://evil.example" } })).statusCode, 403);
   assert.equal((await app.admin.inject({ url: "/api/state?person=00000000-0000-0000-0000-000000000000", headers: { host: "localhost", origin: "https://evil.example" } })).statusCode, 403);
