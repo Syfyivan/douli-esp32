@@ -15,8 +15,8 @@ export class SettingsWriter {
   update(patch) {
     for (const [key, value] of Object.entries(patch)) this.pending.set(key, { value });
     this.error = "";
+    this.running ||= Promise.resolve().then(() => this.flush());
     this.changed(this.snapshot());
-    this.running ||= this.flush();
     return this.running;
   }
   async flush() {

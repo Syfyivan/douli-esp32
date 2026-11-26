@@ -10,6 +10,7 @@ test("night edits stay pending across page changes and rapid toggles save in ord
     return patch;
   }, saved: value => results.push(value), changed: value => snapshots.push(value), failed: assert.fail });
   const finished = writer.update({ enabled: false });
+  await Promise.resolve();
   writer.update({ enabled: true });
   writer.update({ enabled: false, volume: 0.25 });
   assert.deepEqual(writes, [{ enabled: false }], "only one write may be in flight");
@@ -43,9 +44,23 @@ test("a failed older write cannot discard a newer value queued during the reques
     return patch;
   }, saved: value => saved.push(value), changed() {}, failed() {} });
   const completed = writer.update({ start: "23:00" });
+  await Promise.resolve();
   writer.update({ start: "23:30", end: "08:00" });
   first.reject(new Error("request failed")); await completed;
   assert.deepEqual(saved, [{ start: "23:30", end: "08:00" }]);
+  assert.equal(writer.snapshot().status, "saved");
+});
+
+test("a synchronous write failure does not strand subsequent edits", async () => {
+  const saved = [], failures = [];
+  const writer = new SettingsWriter({
+    write: patch => { if (patch.volume === 0.4) throw new Error("offline"); return patch; },
+    saved: value => saved.push(value), changed() {}, failed: error => failures.push(error.message),
+  });
+  await writer.update({ volume: 0.4 });
+  await writer.update({ volume: 0.6 });
+  assert.deepEqual(failures, ["offline"]);
+  assert.deepEqual(saved, [{ volume: 0.6 }]);
   assert.equal(writer.snapshot().status, "saved");
 });
 
