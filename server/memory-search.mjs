@@ -16,22 +16,30 @@ export function terms(text) {
 export function lexicalRank(query, rows, getText = row => row.text) {
   const q = [...new Set(terms(query))];
   if (!q.length || !rows.length) return [];
+  const df = new Map(q.map(token => [token, 0]));
   const docs = rows.map(row => {
     const counts = new Map(), tokens = terms(getText(row));
-    for (const token of tokens) counts.set(token, (counts.get(token) || 0) + 1);
+    for (const token of tokens) {
+      if (df.has(token)) counts.set(token, (counts.get(token) || 0) + 1);
+    }
+    for (const token of counts.keys()) df.set(token, df.get(token) + 1);
     return { row, counts, length: Math.max(tokens.length, 1) };
   });
   const avg = docs.reduce((n, d) => n + d.length, 0) / docs.length;
-  const df = new Map(q.map(t => [t, docs.filter(d => d.counts.has(t)).length]));
-  return docs.map(d => {
+  const weights = Array.from(df, ([token, count]) =>
+    [token, Math.log(1 + (docs.length - count + 0.5) / (count + 0.5))]);
+  const ranked = [];
+  for (const d of docs) {
+    if (!d.counts.size) continue;
     let score = 0;
-    for (const token of q) {
-      const tf = d.counts.get(token) || 0;
-      score += Math.log(1 + (docs.length - df.get(token) + 0.5) / (df.get(token) + 0.5)) *
-        tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * d.length / avg));
+    const norm = 1.2 * (0.25 + 0.75 * d.length / avg);
+    for (const [token, weight] of weights) {
+      const tf = d.counts.get(token);
+      if (tf) score += weight * tf * 2.2 / (tf + norm);
     }
-    return { ...d.row, score, lexical: score / (score + 1) };
-  }).filter(r => r.score > 0).sort((a, b) => b.score - a.score);
+    ranked.push({ ...d.row, score, lexical: score / (score + 1) });
+  }
+  return ranked.sort((a, b) => b.score - a.score);
 }
 // Conservative estimate for Chinese/English JSON; budgets include labels and IDs.
 export function estimateTokens(value) {

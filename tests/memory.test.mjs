@@ -7,10 +7,27 @@ import { DatabaseSync } from "node:sqlite";
 import { Store } from "../server/store.mjs";
 import { mergeSettings } from "../server/config.mjs";
 import { putMemory, forgetMemory, retrieveMemories, evidenceFor, extractMemory, hash } from "../server/memory.mjs";
-import { MemorySearch, estimateTokens, dateRange } from "../server/memory-search.mjs";
+import { MemorySearch, estimateTokens, dateRange, lexicalRank } from "../server/memory-search.mjs";
 import { MemoryService } from "../server/memory-service.mjs";
 import { MemoryDialogue, memoryIntent } from "../server/memory-dialogue.mjs";
 import { recordCorrection } from "../server/input.mjs";
+
+test("keyword ranking counts repeated matches and keeps non-matching words in document length", () => {
+  const rows = [
+    { id: "tie-1", topic: "coffee coffee" },
+    { id: "tie-2", topic: "coffee coffee" },
+    { id: "longer", topic: "coffee coffee walk book" },
+    { id: "unique", topic: "tea" },
+    { id: "miss", topic: "walk book" },
+  ];
+  const results = lexicalRank("coffee tea coffee", rows, row => row.topic);
+  const expected = [[1, 1, 1], [3, 2, 2], [3, 2, 2], [3, 2, 4]].map(([df, tf, length]) => {
+    const weight = Math.log(1 + (rows.length - df + 0.5) / (df + 0.5));
+    return weight * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * length / (11 / rows.length)));
+  });
+  assert.deepEqual(results.map(row => row.id), ["unique", "tie-1", "tie-2", "longer"]);
+  assert.deepEqual(results.map(row => row.score), expected);
+});
 
 function fixture(t, patch = {}) {
   const directory = mkdtempSync(join(tmpdir(), "douli-memory-v2-"));
